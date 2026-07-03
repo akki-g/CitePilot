@@ -104,7 +104,7 @@ Use these official or primary docs as the source of truth while implementing:
 - Neo4j GraphRAG Python GitHub: https://github.com/neo4j/neo4j-graphrag-python
 - pgvector GitHub: https://github.com/pgvector/pgvector
 - FastAPI docs: https://fastapi.tiangolo.com/
-- Next.js docs: https://nextjs.org/docs
+- Vite docs: https://vite.dev/guide/
 - Tectonic LaTeX engine: https://tectonic-typesetting.github.io/
 
 ---
@@ -151,7 +151,8 @@ Avoid these until after the MVP:
 
 Use:
 
-- **Next.js App Router** for frontend app structure.
+- **Vite** for the React frontend dev/build toolchain.
+- **React Router** for frontend routes if the MVP needs separate project/workspace URLs.
 - **React** for UI.
 - **TypeScript** for all frontend code.
 - **Tailwind CSS** for styling.
@@ -329,7 +330,7 @@ Why Tectonic:
 
 ```mermaid
 flowchart LR
-    U[User Browser] --> FE[Next.js Frontend]
+    U[User Browser] --> FE[Vite React Frontend]
     FE --> API[FastAPI Backend]
     FE --> STREAM[Agent Streaming Endpoint]
 
@@ -444,14 +445,15 @@ citepilot/
   apps/
     web/
       package.json
-      next.config.ts
+      vite.config.ts
+      index.html
       tsconfig.json
-      app/
-        layout.tsx
-        page.tsx
-        projects/
-          [projectId]/
-            page.tsx
+      src/
+        main.tsx
+        App.tsx
+        pages/
+          ProjectListPage.tsx
+          WorkspacePage.tsx
       components/
         editor/
           LatexEditor.tsx
@@ -2997,7 +2999,7 @@ After MVP:
 - Bootstrap repo.
 - Docker Compose.
 - FastAPI health.
-- Next.js placeholder.
+- Vite React placeholder.
 - Postgres/Neo4j/Redis running.
 
 ### Day 2

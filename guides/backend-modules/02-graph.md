@@ -13,6 +13,8 @@ Files in this guide (all complete — type them as-is):
 
 ⭐ files are the interview material — type them slowly and be able to draw the coupling and co-citation patterns on a whiteboard.
 
+**Comment style:** Cypher comments inside string constants can get noisy fast, so the query strings stay readable and the detailed explanation lives immediately below the code.
+
 ---
 
 ## `backend/app/graph/neo4j_client.py`
@@ -20,64 +22,98 @@ Files in this guide (all complete — type them as-is):
 One driver per process; the driver owns the connection pool, sessions are borrowed per unit of work.
 
 ```python
+# AsyncDriver is Neo4j's process-safe connection-pool object.
+# AsyncGraphDatabase is the factory that creates that driver.
 from neo4j import AsyncDriver, AsyncGraphDatabase
 
+# Settings provides the URI and credentials from env; this module does not read env directly.
 from app.config import Settings
 
 
 def create_neo4j_driver(settings: Settings) -> AsyncDriver:
+    # Build one driver per backend process. Individual operations borrow sessions from it.
     return AsyncGraphDatabase.driver(
+        # In Docker Compose this is `bolt://neo4j:7687`, the Neo4j service hostname.
         settings.NEO4J_URI,
+        # Neo4j expects username/password auth as a tuple.
         auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
     )
 ```
+
+Walkthrough:
+
+- The driver is analogous to SQLAlchemy's engine: expensive, pooled, and process-wide.
+- Do not create drivers per request; create once in FastAPI lifespan and close on shutdown.
+- Functions that need graph access receive the driver and open short sessions.
 
 ## `backend/app/graph/schema.py`
 
 Applied idempotently at every startup. Uniqueness constraints double as indexes — without them, every `MERGE (p:Paper {id: ...})` is a full graph scan.
 
 ```python
+# The driver type is used for the startup function signature.
 from neo4j import AsyncDriver
 
+# These are idempotent DDL statements. They can run every startup safely.
 CONSTRAINT_STATEMENTS = [
+    # Paper UUID from Postgres is the canonical identity in Neo4j.
     "CREATE CONSTRAINT paper_id_unique IF NOT EXISTS "
     "FOR (p:Paper) REQUIRE p.id IS UNIQUE",
+    # OpenAlex ID is also unique when present, useful for import lookup/debugging.
     "CREATE CONSTRAINT paper_openalex_unique IF NOT EXISTS "
     "FOR (p:Paper) REQUIRE p.openalex_id IS UNIQUE",
+    # Author UUID mirrors Postgres author identity.
     "CREATE CONSTRAINT author_id_unique IF NOT EXISTS "
     "FOR (a:Author) REQUIRE a.id IS UNIQUE",
+    # Concepts are normalized by name for MVP.
     "CREATE CONSTRAINT concept_name_unique IF NOT EXISTS "
     "FOR (c:Concept) REQUIRE c.name IS UNIQUE",
+    # Year index helps graph views filter/sort papers by publication year.
     "CREATE INDEX paper_year_index IF NOT EXISTS FOR (p:Paper) ON (p.year)",
+    # Stub index helps UI/retrieval distinguish incomplete imported references.
     "CREATE INDEX paper_stub_index IF NOT EXISTS FOR (p:Paper) ON (p.is_stub)",
 ]
 
 
 async def apply_constraints(driver: AsyncDriver) -> None:
+    # Open one short-lived write session for schema setup.
     async with driver.session() as session:
+        # Run statements one at a time so failures are easy to locate.
         for statement in CONSTRAINT_STATEMENTS:
             await session.run(statement)
 ```
+
+Walkthrough:
+
+- Constraints prevent duplicate graph nodes and also create indexes for fast `MERGE`.
+- `IF NOT EXISTS` makes startup repeatable across restarts.
+- The manual `.cypher` file below mirrors this list for debugging in Neo4j Browser.
 
 ## `infra/scripts/init_neo4j.cypher`
 
 Same statements with `;` terminators, for pasting into the Neo4j browser manually.
 
 ```cypher
+// Paper UUID from Postgres is unique in Neo4j.
 CREATE CONSTRAINT paper_id_unique IF NOT EXISTS
 FOR (p:Paper) REQUIRE p.id IS UNIQUE;
 
+// OpenAlex work IDs are unique when present.
 CREATE CONSTRAINT paper_openalex_unique IF NOT EXISTS
 FOR (p:Paper) REQUIRE p.openalex_id IS UNIQUE;
 
+// Author UUID mirrors Postgres.
 CREATE CONSTRAINT author_id_unique IF NOT EXISTS
 FOR (a:Author) REQUIRE a.id IS UNIQUE;
 
+// Concepts are normalized by name for MVP.
 CREATE CONSTRAINT concept_name_unique IF NOT EXISTS
 FOR (c:Concept) REQUIRE c.name IS UNIQUE;
 
+// Speeds year filtering/sorting in graph queries.
 CREATE INDEX paper_year_index IF NOT EXISTS FOR (p:Paper) ON (p.year);
 
+// Speeds finding/rendering stub papers.
 CREATE INDEX paper_stub_index IF NOT EXISTS FOR (p:Paper) ON (p.is_stub);
 ```
 
@@ -91,8 +127,10 @@ The two bibliometrics to internalize:
 - **Co-citation** `(citing)-[:CITES]->(seed)`, `(citing)-[:CITES]->(other)` — papers the community treats as companions of the seed.
 
 ```python
+# dataclass gives tiny immutable-ish value objects without Pydantic overhead.
 from dataclasses import dataclass, field
 
+# AsyncDriver is passed in from app.state or worker setup.
 from neo4j import AsyncDriver
 
 
@@ -333,23 +371,48 @@ Notes:
 - Every function takes/returns **string UUIDs** — Neo4j properties are strings; callers convert at the boundary.
 - `UNWIND $paper_ids` batches multi-seed queries into one round trip instead of one query per seed.
 
+Query walkthrough:
+
+- `GraphCandidate`: standard return shape for every graph signal; retrieval can fuse them consistently.
+- `_DIRECT_NEIGHBORS`: finds papers one citation hop from any seed, excluding the seeds themselves.
+- `_BIBLIOGRAPHIC_COUPLING`: finds papers that cite the same references as the seed papers.
+- `_CO_CITATION`: finds papers cited by the same third-party papers that cite the seed papers.
+- `_SHARED_CONCEPTS`: finds papers connected through common concept nodes.
+- `_REFERENCES_OF`: lists what a seed paper cites, sorted by authority.
+- `_CITERS_OF`: lists papers that cite the seed, sorted by authority.
+- `_TWO_HOP_NEIGHBORHOOD`: builds graph-panel nodes/edges with a per-hop cap so hub papers do not explode the result.
+- `if not paper_ids: return []`: avoids sending pointless graph queries and makes empty retrieval seeds safe.
+- `score`: raw feature count for that one signal; final ranking uses RRF later, not this raw score directly.
+- `features`: carries explainability data like shared reference count or concept names.
+- `_node_dict`: converts Neo4j node objects into JSON-friendly dictionaries for the API/UI.
+- `seen`: deduplicates graph edges because the same edge can appear through multiple matched paths.
+
 ## ⭐ `backend/app/graph/sync.py`
 
 Postgres → Neo4j mirroring. Idempotent by construction: `MERGE` on the Postgres UUID, then `SET` current properties — re-imports and re-syncs are free.
 
 ```python
+# Future annotations allow forward references in type hints without runtime issues.
 from __future__ import annotations
 
+# Sequence accepts list/tuple-like collections for batch functions.
 from collections.abc import Sequence
+# UUID is the Postgres identity type; Neo4j stores it as a string property.
 from uuid import UUID
 
+# Neo4j write driver.
 from neo4j import AsyncDriver
+# select builds SQLAlchemy queries for reading Postgres rows.
 from sqlalchemy import select
+# AsyncSession is the unit of Postgres work passed in by routes/workers.
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ORM models are the source rows that get mirrored into Neo4j.
 from app.db.models import Author, Citation, Concept, Paper, PaperAuthor, PaperConcept
+# Structured logger for sync events.
 from app.logging import get_logger
 
+# Module logger.
 log = get_logger(__name__)
 
 
@@ -521,13 +584,31 @@ async def resync_graph(session: AsyncSession, driver: AsyncDriver) -> None:
 
 (Per-author/per-concept round trips are fine at POC scale; batching them with `UNWIND` like `sync_stub_papers` is the obvious optimization to mention in an interview.)
 
+Sync walkthrough:
+
+- `sync_paper`: mirrors one canonical Postgres paper plus metadata nodes/edges.
+- `session.get(Paper, paper_id)`: proves the paper exists before writing graph state.
+- Author/concept SQL queries read normalized relational rows, not external API payloads.
+- `MERGE (p:Paper {id: $id})`: idempotent upsert by Postgres UUID.
+- `SET ...`: refreshes properties when a stub becomes a full paper or metadata changes.
+- `MERGE (p)-[r:WRITTEN_BY]->(a)`: relation is idempotent; `author_order` updates on re-sync.
+- Venue nodes are currently keyed by name, which is good enough for the MVP.
+- Concept nodes are keyed by name; concept UUID is stored for traceability.
+- `sync_stub_papers`: creates graph endpoints for referenced papers before full import.
+- `UNWIND $papers AS row`: batch writes many stub nodes in one Neo4j round trip.
+- `sync_citations`: creates `CITES` edges only if both endpoint nodes exist.
+- `resync_graph`: deletes all Neo4j state and rebuilds from Postgres, proving Neo4j is derived.
+- `by_citing`: groups citation edges so each citing paper can be synced in one batch call.
+
 ## `backend/app/graph/resync.py`
 
 Standalone entrypoint for `make resync-graph` (`python -m app.graph.resync`).
 
 ```python
+# asyncio lets this module run async setup from a normal `python -m` entrypoint.
 import asyncio
 
+# Settings and client factories mirror FastAPI lifespan, but for a one-off script.
 from app.config import get_settings
 from app.db.postgres import create_engine, create_session_factory
 from app.graph.neo4j_client import create_neo4j_driver
@@ -536,22 +617,34 @@ from app.graph.sync import resync_graph
 
 
 async def main() -> None:
+    # Parse env once.
     settings = get_settings()
+    # Create temporary process-local clients.
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
     driver = create_neo4j_driver(settings)
     try:
+        # Constraints must exist before MERGE-heavy sync work.
         await apply_constraints(driver)
+        # Use one DB session for the rebuild.
         async with session_factory() as session:
             await resync_graph(session, driver)
     finally:
+        # Close network clients even if rebuild fails.
         await driver.close()
         await engine.dispose()
 
 
 if __name__ == "__main__":
+    # Makes `python -m app.graph.resync` work.
     asyncio.run(main())
 ```
+
+Walkthrough:
+
+- This script deliberately repeats the app's client setup instead of importing FastAPI.
+- `make resync-graph` can run even when the web API is not serving requests.
+- If Neo4j data is corrupted or wiped, this is the repair path.
 
 ## Acceptance checks
 

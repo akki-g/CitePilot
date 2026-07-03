@@ -61,7 +61,7 @@ Real-time collaboration, multi-user permissions, full PDF parsing (GROBID), fine
 
 ### 2.1 Frontend (agent-owned; see Section 16)
 
-- **Next.js (App Router) + React + TypeScript**, **Tailwind CSS**, **shadcn/ui**.
+- **Vite + React + TypeScript**, **Tailwind CSS**, **shadcn/ui**.
 - **CodeMirror 6** via `@uiw/react-codemirror` for the LaTeX editor.
 - **TanStack Query** for server state; **Zustand** for editor/agent UI state; **Zod** for API schema parsing; **React Hook Form** where forms exist.
 - **@xyflow/react** for the citation graph panel (radial layout; force-directed is future work).
@@ -127,13 +127,16 @@ citepilot/
 
   apps/
     web/
-      package.json            # "dev": "next dev -H 0.0.0.0"
-      next.config.ts
+      package.json            # "dev": "vite --host 0.0.0.0 --port 3000"
+      vite.config.ts
       tsconfig.json
-      app/
-        layout.tsx
-        page.tsx              # project list
-        projects/[projectId]/page.tsx   # workspace
+      index.html
+      src/
+        main.tsx
+        App.tsx               # route shell / project list
+        pages/
+          ProjectListPage.tsx
+          WorkspacePage.tsx
       components/
         editor/  LatexEditor.tsx  FileTree.tsx  PdfPreview.tsx
         agent/   AgentPanel.tsx  ToolTrace.tsx  CitationSuggestionCard.tsx  PatchReviewCard.tsx
@@ -376,7 +379,7 @@ services:
     volumes:
       - ./apps/web:/app/apps/web
       - /app/apps/web/node_modules
-    command: pnpm dev            # package.json dev script: "next dev -H 0.0.0.0"
+    command: pnpm dev            # package.json dev script: "vite --host 0.0.0.0 --port 3000"
 
 volumes:
   postgres_data:
@@ -1164,7 +1167,7 @@ GET  /api/latex/compilations/{id}/pdf                     # streams application/
 
 ### 14.2 CORS — configure on day one
 
-Next.js on :3000 calling FastAPI on :8000 is cross-origin; without this the first browser fetch fails:
+Vite on :3000 calling FastAPI on :8000 is cross-origin; without this the first browser fetch fails:
 
 ```python
 app.add_middleware(

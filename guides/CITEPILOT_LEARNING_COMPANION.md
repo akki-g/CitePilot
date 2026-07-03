@@ -170,7 +170,7 @@ MCP clients show your docstrings to the model verbatim — the docstring *is* th
 ## 6. System Design Talking Points (Q&A prep)
 
 **"Walk me through the architecture."**
-> Next.js/TypeScript workspace in front; FastAPI backend; Postgres+pgvector as the durable store and vector index; Neo4j as a rebuildable graph mirror for traversal; Redis for the async job queue (arq) and external-API cache; Tectonic in a sandboxed worker for LaTeX. The agent is a bounded tool loop over ten typed tools, and the identical tools are exposed through an MCP server via one shared registry.
+> Vite React/TypeScript workspace in front; FastAPI backend; Postgres+pgvector as the durable store and vector index; Neo4j as a rebuildable graph mirror for traversal; Redis for the async job queue (arq) and external-API cache; Tectonic in a sandboxed worker for LaTeX. The agent is a bounded tool loop over ten typed tools, and the identical tools are exposed through an MCP server via one shared registry.
 
 **"Why both Postgres and Neo4j? Isn't that overkill?"**
 > Postgres is the source of truth and does vectors-next-to-metadata well; Neo4j makes multi-hop relationship queries — co-citation, bibliographic coupling, neighborhood expansion — trivial to express and fast to run. I kept the coupling honest: Neo4j is fully derived, and `resync_graph` rebuilds it from Postgres in one command. I *could* do two-hop queries with recursive CTEs in Postgres, and for a smaller scope I would — but relationship-heavy retrieval is the product, so the graph store earns its complexity.

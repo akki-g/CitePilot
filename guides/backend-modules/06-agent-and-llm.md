@@ -20,6 +20,8 @@ Two deliberate architecture decisions made here:
 1. **Non-streaming LLM calls.** Each loop iteration emits its full text as one `message_delta`. The SSE event protocol already supports token-level deltas, so upgrading later is a client change in one place. This cuts the LLM adapters to ~80 lines each.
 2. **Web patches are proposals.** In the web UI, `patch_latex_file` is intercepted: the agent's patch is previewed to the user (`patch_proposal` event) and applied only via the accept endpoint (guide 08). Over MCP there's no UI, so patches apply directly — versioning is the safety net.
 
+**Comment style:** schemas are kept readable, so explanations focus on the purpose of each input/output model. The core loop and registry get extra comments because they are the main learning surface.
+
 ---
 
 ## `backend/app/agent/schemas.py`
@@ -27,9 +29,12 @@ Two deliberate architecture decisions made here:
 Pydantic I/O for all ten tools + the structured `ToolError`. Every output model has a `summary` — it becomes the tool-trace line in the UI.
 
 ```python
+# Any is used for arbitrary JSON-like error details.
 from typing import Any, Literal
+# UUID gives typed IDs in tool inputs/outputs.
 from uuid import UUID
 
+# BaseModel validates tool JSON; Field adds defaults and bounds.
 from pydantic import BaseModel, Field
 
 
@@ -38,12 +43,15 @@ class ToolError(Exception):
     model can correct itself and retry."""
 
     def __init__(self, code: str, message: str, details: dict[str, Any] | None = None):
+        # Exception text is model/user-readable.
         super().__init__(message)
+        # Stable machine-readable code like "not_found" or "invalid_arguments".
         self.code = code
         self.message = message
         self.details = details or {}
 
     def as_tool_result(self) -> dict[str, Any]:
+        # Tool errors become data passed back to the LLM so it can self-correct.
         return {"ok": False, "error": self.code, "message": self.message, "details": self.details}
 
 
@@ -205,9 +213,24 @@ class CompileLatexOutput(BaseModel):
     summary: str = "latex compilation queued"
 ```
 
+Schema walkthrough:
+
+- `SearchPapersInput/Output`: external or local paper search; used by UI and agent.
+- `ImportPaperInput/Output`: enqueue import work instead of doing slow ingestion in the request.
+- `GetPaper*`: inspect one canonical paper row.
+- `CitationNeighborhood*`: graph-panel and graph-exploration tool shape.
+- `RetrieveEvidence*`: raw HybridRetriever output exposed as a tool.
+- `RankRelatedWork*`: citation-suggestion convenience wrapper around retrieval.
+- `SuggestBibtex*`: turns papers into project-linked BibTeX entries and keys.
+- `InspectLatexProject*`: gives the agent exact file text and version before patching.
+- `PatchLatexFile*`: carries the anchor-based patch JSON into the safe patcher.
+- `CompileLatex*`: queues Tectonic compilation.
+- Every output has `summary` so the UI tool trace can show a concise row.
+
 ## `backend/app/agent/prompts.py`
 
 ```python
+# System prompt is stable project behavior, not user-provided context.
 SYSTEM_PROMPT = """You are CitePilot, a research-writing assistant. You help users write LaTeX
 research papers using retrieved scholarly evidence.
 
@@ -228,6 +251,7 @@ def build_user_context(
     selected_text: str | None,
     user_message: str,
 ) -> str:
+    # Wrap runtime context and the user's actual request into one user message.
     return f"""Project: {project_name}
 Active file: {active_file_path or "unknown"}
 
@@ -239,17 +263,26 @@ User request:
 """
 ```
 
+Prompt walkthrough:
+
+- The system prompt forbids invented citations and forces tool-grounded claims.
+- `build_user_context()` makes the active file and selected text visible to the model.
+- This is not hidden chain-of-thought; it is ordinary context given to the model.
+
 ## `backend/app/agent/llm/base.py`
 
 The provider-neutral contract. `Message` must round-trip tool calls: an assistant message can carry `tool_calls`, and a `tool` message carries the result plus the `tool_call_id` it answers — providers can't link results to calls without that id. Each client translates this neutral form into its wire format (that's the whole adapter pattern).
 
 ```python
+# dataclass gives simple immutable-ish transport objects.
 from dataclasses import dataclass, field
+# Any is needed for JSON schema and tool argument dictionaries.
 from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
 class ToolSpec:
+    # Tool name shown to the provider/model.
     name: str
     description: str
     input_schema: dict[str, Any]   # JSON schema, generated from the Pydantic input model
@@ -257,6 +290,7 @@ class ToolSpec:
 
 @dataclass(frozen=True)
 class ToolCall:
+    # Provider-generated call id; tool results must point back to it.
     id: str
     name: str
     arguments: dict[str, Any]
@@ -267,8 +301,11 @@ class Message:
     """role: 'system' | 'user' | 'assistant' | 'tool'."""
 
     role: str
+    # Text content for normal messages.
     content: str = ""
+    # Assistant messages can request tool calls.
     tool_calls: list[ToolCall] = field(default_factory=list)   # assistant messages
+    # Tool result messages identify which assistant call they answer.
     tool_call_id: str | None = None                            # tool messages
 
 
@@ -279,24 +316,35 @@ class LLMResponse:
 
 
 class LLMClient(Protocol):
+    # Every provider adapter implements this one method.
     async def complete(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> LLMResponse: ...
 ```
+
+LLM contract walkthrough:
+
+- Provider adapters translate this neutral shape into Anthropic/OpenAI wire formats.
+- `tool_call_id` is essential: without it, providers cannot associate tool results with tool calls.
+- The orchestrator depends only on `LLMClient`, so tests can use `FakeLLMClient`.
 
 ## `backend/app/agent/llm/fake.py`
 
 Scriptable fake — the backbone of `test_agent_stream.py`. Queue up responses (including tool calls) and the orchestrator runs against them with zero network.
 
 ```python
+# deque lets tests pop scripted responses from the left efficiently.
 from collections import deque
 
+# Fake uses the same neutral response/message/spec objects as real providers.
 from app.agent.llm.base import LLMResponse, Message, ToolSpec
 
 
 class FakeLLMClient:
     def __init__(self, responses: list[LLMResponse]):
+        # Queue of model responses the test wants the orchestrator to see.
         self.responses = deque(responses)
+        # Capture prompts/messages so tests can assert tool results were fed back.
         self.calls: list[list[Message]] = []   # inspect what the orchestrator sent
 
     async def complete(
@@ -304,6 +352,7 @@ class FakeLLMClient:
     ) -> LLMResponse:
         self.calls.append(list(messages))
         if not self.responses:
+            # Default completion prevents tests from crashing if script runs out.
             return LLMResponse(text="Done.")
         return self.responses.popleft()
 ```
@@ -313,8 +362,10 @@ class FakeLLMClient:
 Raw httpx against the Messages API — no SDK dependency, and you learn the wire format. Translation rules: system messages → top-level `system` string; assistant tool calls → `tool_use` content blocks; `tool` messages → `tool_result` blocks inside a **user** message (consecutive tool results merge into one user message, as the API requires).
 
 ```python
+# Any for provider payload dictionaries.
 from typing import Any
 
+# Direct HTTP client; no provider SDK required.
 import httpx
 
 from app.agent.llm.base import LLMResponse, Message, ToolCall, ToolSpec
@@ -325,6 +376,7 @@ API_VERSION = "2023-06-01"
 
 class AnthropicClient:
     def __init__(self, api_key: str, model: str):
+        # Fail fast if real provider is selected but not configured.
         if not api_key or not model:
             raise ValueError("LLM_API_KEY and LLM_MODEL are required for the Anthropic client")
         self.api_key = api_key
@@ -337,6 +389,7 @@ class AnthropicClient:
     async def complete(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> LLMResponse:
+        # Convert neutral messages into Anthropic's wire format.
         system, wire_messages = self._to_wire(messages)
         payload: dict[str, Any] = {
             "model": self.model,
@@ -346,6 +399,7 @@ class AnthropicClient:
         if system:
             payload["system"] = system
         if tools:
+            # Anthropic tools use name/description/input_schema directly.
             payload["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
@@ -365,6 +419,7 @@ class AnthropicClient:
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        # Anthropic response content is a list of text/tool_use blocks.
         for block in data.get("content", []):
             if block["type"] == "text":
                 text_parts.append(block["text"])
@@ -376,6 +431,7 @@ class AnthropicClient:
 
     @staticmethod
     def _to_wire(messages: list[Message]) -> tuple[str, list[dict]]:
+        # Anthropic separates system prompt from normal messages.
         system_parts: list[str] = []
         wire: list[dict] = []
         for message in messages:
@@ -406,14 +462,24 @@ class AnthropicClient:
         return "\n\n".join(system_parts), wire
 ```
 
+Anthropic adapter walkthrough:
+
+- System messages become one top-level `system` string.
+- Assistant tool calls become `tool_use` blocks.
+- Tool results become `tool_result` blocks inside user messages.
+- The adapter is intentionally isolated so the orchestrator never knows Anthropic details.
+
 ## `backend/app/agent/llm/openai_client.py`
 
 Same adapter, OpenAI wire format: tools are `function` objects, tool results are `role: "tool"` messages, and — the classic gotcha — `function.arguments` is a **JSON string**, not an object.
 
 ```python
+# OpenAI stores tool call arguments as JSON strings, so json is required.
 import json
+# Any for provider payload dictionaries.
 from typing import Any
 
+# Direct HTTP client.
 import httpx
 
 from app.agent.llm.base import LLMResponse, Message, ToolCall, ToolSpec
@@ -423,6 +489,7 @@ API_URL = "https://api.openai.com/v1/chat/completions"
 
 class OpenAIClient:
     def __init__(self, api_key: str, model: str):
+        # Fail fast if real provider is selected but not configured.
         if not api_key or not model:
             raise ValueError("LLM_API_KEY and LLM_MODEL are required for the OpenAI client")
         self.api_key = api_key
@@ -435,8 +502,10 @@ class OpenAIClient:
     async def complete(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> LLMResponse:
+        # OpenAI chat completions payload.
         payload: dict[str, Any] = {"model": self.model, "messages": self._to_wire(messages)}
         if tools:
+            # OpenAI tools are wrapped as function tool objects.
             payload["tools"] = [
                 {
                     "type": "function",
@@ -458,6 +527,7 @@ class OpenAIClient:
         message = resp.json()["choices"][0]["message"]
 
         tool_calls = [
+            # function.arguments is JSON text, not a dict.
             ToolCall(
                 id=tc["id"],
                 name=tc["function"]["name"],
@@ -469,6 +539,7 @@ class OpenAIClient:
 
     @staticmethod
     def _to_wire(messages: list[Message]) -> list[dict]:
+        # Convert neutral Message objects to OpenAI chat messages.
         wire: list[dict] = []
         for m in messages:
             if m.role == "assistant" and m.tool_calls:
@@ -493,9 +564,17 @@ class OpenAIClient:
         return wire
 ```
 
+OpenAI adapter walkthrough:
+
+- Tool specs become `{"type": "function", "function": ...}`.
+- Assistant tool-call messages include a `tool_calls` array.
+- Tool result messages use role `"tool"` plus `tool_call_id`.
+- `json.loads(function.arguments)` is the common gotcha.
+
 ## `backend/app/agent/llm/providers.py`
 
 ```python
+# Provider factories imported here keep app startup code simple.
 from app.agent.llm.anthropic_client import AnthropicClient
 from app.agent.llm.base import LLMClient
 from app.agent.llm.fake import FakeLLMClient
@@ -504,6 +583,7 @@ from app.config import Settings
 
 
 def create_llm_client(settings: Settings) -> LLMClient:
+    # Tests should never call external LLM providers.
     if settings.APP_ENV == "test":
         return FakeLLMClient([])
     if settings.LLM_PROVIDER == "anthropic":
@@ -513,17 +593,28 @@ def create_llm_client(settings: Settings) -> LLMClient:
     raise ValueError(f"Unsupported LLM provider: {settings.LLM_PROVIDER}")
 ```
 
+Provider walkthrough:
+
+- One factory selects the adapter from settings.
+- The rest of the backend depends on `LLMClient`, not vendor-specific classes.
+
 ## ⭐ `backend/app/agent/tools.py`
 
 The single source of tool logic. FastAPI routes, the orchestrator, and the MCP server all call these functions through `ToolContext` — capabilities are a layer; agents and protocols are consumers.
 
 ```python
+# Future annotations keep type hints flexible.
 from __future__ import annotations
 
+# arq pool enqueues slow jobs.
 from arq.connections import ArqRedis
+# Neo4j driver powers graph tools.
 from neo4j import AsyncDriver
+# Redis powers external API caches and clients.
 from redis.asyncio import Redis
+# select builds DB reads.
 from sqlalchemy import select
+# AsyncSession is the DB unit of work.
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import schemas as s
@@ -571,6 +662,7 @@ class ToolContext:
         redis: Redis,
         arq_pool: ArqRedis | None = None,
     ):
+        # Store dependencies; tools should not reach into FastAPI app.state directly.
         self.session = session
         self.settings = settings
         self.neo4j = neo4j
@@ -579,6 +671,7 @@ class ToolContext:
 
 
 async def _require_project(ctx: ToolContext, project_id) -> Project:
+    # Every project-scoped tool begins here; future auth hooks can live here too.
     project = await ctx.session.get(Project, project_id)
     if project is None:
         raise ToolError("not_found", f"Project {project_id} does not exist")
@@ -586,6 +679,7 @@ async def _require_project(ctx: ToolContext, project_id) -> Project:
 
 
 async def _author_names(ctx: ToolContext, paper_ids: list) -> dict:
+    # Helper used by paper search/BibTeX tools to avoid duplicating author joins.
     if not paper_ids:
         return {}
     rows = (
@@ -603,9 +697,11 @@ async def _author_names(ctx: ToolContext, paper_ids: list) -> dict:
 
 
 async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.SearchPapersOutput:
+    # Tool implementation: same function is used by routes, agent, and MCP.
     results: list[s.PaperSearchResult] = []
 
     if args.source == "local":
+        # Local search is a simple title search for POC.
         stmt = select(Paper).where(Paper.title.is_not(None), Paper.title.ilike(f"%{args.query}%"))
         if args.year_min:
             stmt = stmt.where(Paper.publication_year >= args.year_min)
@@ -628,6 +724,7 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
                 )
             )
     else:
+        # OpenAlex path hits the cached client, then normalizes results.
         client = OpenAlexClient(ctx.settings, ctx.redis)
         try:
             data = await client.search_works(args.query, limit=args.limit)
@@ -660,6 +757,7 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
 
 
 async def import_paper(ctx: ToolContext, args: s.ImportPaperInput) -> s.ImportPaperOutput:
+    # Import is slow, so the tool queues a job instead of doing work inline.
     await _require_project(ctx, args.project_id)
     if ctx.arq_pool is None:
         raise ToolError("unavailable", "job queue is not available in this context")
@@ -776,6 +874,7 @@ async def get_citation_neighborhood(
 async def retrieve_evidence(
     ctx: ToolContext, args: s.RetrieveEvidenceInput
 ) -> s.RetrieveEvidenceOutput:
+    # This is the tool surface over the HybridRetriever from guide 04.
     await _require_project(ctx, args.project_id)
     embeddings = create_embedding_client(ctx.settings)
     try:
@@ -926,6 +1025,7 @@ async def patch_latex_file(
     orchestrator intercepts this tool and turns it into a proposal instead."""
     await _require_project(ctx, args.project_id)
     try:
+        # Validate dict into ReplaceTextPatch or InsertAfterPatch.
         patch = PATCH_ADAPTER.validate_python(args.patch)
     except Exception as exc:
         raise ToolError("invalid_arguments", f"patch failed validation: {exc}")
@@ -941,6 +1041,7 @@ async def patch_latex_file(
 
 
 async def compile_latex(ctx: ToolContext, args: s.CompileLatexInput) -> s.CompileLatexOutput:
+    # Compilation is slow and sandboxed in worker, so enqueue it.
     await _require_project(ctx, args.project_id)
     if ctx.arq_pool is None:
         raise ToolError("unavailable", "job queue is not available in this context")
@@ -965,14 +1066,27 @@ from pydantic import TypeAdapter
 PATCH_ADAPTER: TypeAdapter[Patch] = TypeAdapter(Patch)
 ```
 
+Tool walkthrough:
+
+- `ToolContext` is dependency injection for tools; it keeps capabilities independent of FastAPI/MCP.
+- Tools are narrow and typed. There is no arbitrary SQL, Cypher, shell, or filesystem tool.
+- `search_papers` has local and OpenAlex paths but returns one common output shape.
+- `import_paper` and `compile_latex` queue durable jobs instead of blocking the agent.
+- `retrieve_evidence` is the GraphRAG tool; `rank_related_work` formats it for citation suggestions.
+- `suggest_bibtex` both links papers to a project and returns stable citation keys.
+- `patch_latex_file` delegates safety to the anchor-based patcher.
+
 ## ⭐ `backend/app/agent/tool_registry.py`
 
 Tools registered once with name, **description (the model reads this — a vague description is a routing bug)**, Pydantic input/output models, and the implementation. `specs()` derives JSON schema from the input models, so validation and documentation cannot drift apart. The web agent and MCP consume this same registry.
 
 ```python
+# Callable/Awaitable type the core async tool functions.
 from collections.abc import Awaitable, Callable
+# dataclass for registry metadata.
 from dataclasses import dataclass
 
+# BaseModel is the parent type of all input/output schemas.
 from pydantic import BaseModel, ValidationError
 
 from app.agent import schemas as s
@@ -984,6 +1098,7 @@ from app.agent.tools import ToolContext
 
 @dataclass(frozen=True)
 class ToolDefinition:
+    # Metadata and implementation for one model-callable tool.
     name: str
     description: str
     input_model: type[BaseModel]
@@ -993,10 +1108,12 @@ class ToolDefinition:
 
 class ToolRegistry:
     def __init__(self, ctx: ToolContext):
+        # Store runtime dependencies once; every tool call uses this context.
         self.ctx = ctx
         self._tools: dict[str, ToolDefinition] = {}
 
     def register(self, definition: ToolDefinition) -> None:
+        # Duplicate names would make model routing ambiguous.
         if definition.name in self._tools:
             raise ValueError(f"duplicate tool: {definition.name}")
         self._tools[definition.name] = definition
@@ -1005,6 +1122,7 @@ class ToolRegistry:
         return sorted(self._tools)
 
     def specs(self) -> list[ToolSpec]:
+        # Convert Pydantic input models into provider-neutral tool specs.
         return [
             ToolSpec(
                 name=d.name,
@@ -1015,10 +1133,12 @@ class ToolRegistry:
         ]
 
     async def execute(self, name: str, arguments: dict) -> BaseModel:
+        # Find registered tool by model-requested name.
         definition = self._tools.get(name)
         if definition is None:
             raise ToolError("unknown_tool", f"No tool named '{name}'. Available: {self.names()}")
         try:
+            # Validate raw JSON arguments before executing Python code.
             args = definition.input_model.model_validate(arguments)
         except ValidationError as exc:
             raise ToolError(
@@ -1137,13 +1257,22 @@ def build_default_registry(ctx: ToolContext) -> ToolRegistry:
     return registry
 ```
 
+Registry walkthrough:
+
+- Tool descriptions are part of the prompt; write them for the model.
+- JSON schema is derived from Pydantic models so validation and docs do not drift.
+- `execute()` is the one choke point for unknown tools and invalid args.
+- `build_default_registry()` is where the ten MVP tools are declared in one place.
+
 ## ⭐ `backend/app/agent/orchestrator.py`
 
 The bounded tool loop. Properties that make it production-grade: max 8 iterations; every tool result **including errors** goes back into the conversation so the model self-corrects (`anchor_ambiguous: found 3 matches` → model retries with a longer anchor); every call persists to `tool_calls` (results truncated to 4 KB); everything streams to the UI as events.
 
 ```python
+# Future annotations for type hints.
 from __future__ import annotations
 
+# json serializes tool results into messages and truncation checks.
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -1164,7 +1293,9 @@ from app.logging import get_logger
 
 log = get_logger(__name__)
 
+# Hard loop bound: agents must not run forever.
 MAX_TOOL_ITERATIONS = 8
+# Tool call results can be large; DB storage is capped.
 RESULT_TRUNCATE_BYTES = 4096
 
 EmitFn = Callable[[str, dict], Awaitable[None]]
@@ -1172,6 +1303,7 @@ EmitFn = Callable[[str, dict], Awaitable[None]]
 
 @dataclass
 class AgentTurnContext:
+    # Request-specific context passed to the orchestrator.
     project_id: UUID
     project_name: str = ""
     active_file_path: str | None = None
@@ -1180,6 +1312,7 @@ class AgentTurnContext:
 
 
 def truncate_result(payload: dict, limit: int = RESULT_TRUNCATE_BYTES) -> dict:
+    # Store full small results, previews for large results.
     encoded = json.dumps(payload, default=str)
     if len(encoded) <= limit:
         return payload
@@ -1187,6 +1320,7 @@ def truncate_result(payload: dict, limit: int = RESULT_TRUNCATE_BYTES) -> dict:
 
 
 async def _load_history(db: AsyncSession, session_id: UUID) -> list[Message]:
+    # Reload prior user/assistant messages for continuity.
     rows = (
         await db.execute(
             select(AgentMessage)
@@ -1206,6 +1340,7 @@ async def run_agent_turn(
     llm: LLMClient,
     emit: EmitFn,
 ) -> None:
+    # Build initial message list: system prompt, history, current contextual user message.
     history = await _load_history(db, agent_session_id)
     messages = [
         Message(role="system", content=SYSTEM_PROMPT),
@@ -1222,9 +1357,11 @@ async def run_agent_turn(
 
     final_text = ""
     for _ in range(MAX_TOOL_ITERATIONS):
+        # Ask the model what to say/do next, with current tool specs.
         response = await llm.complete(messages, tools=registry.specs())
 
         if response.text:
+            # Stream text to UI as a message_delta event.
             final_text = response.text
             await emit("message_delta", {"text": response.text})
 
@@ -1232,9 +1369,11 @@ async def run_agent_turn(
             Message(role="assistant", content=response.text, tool_calls=response.tool_calls)
         )
         if not response.tool_calls:
+            # No tool calls means the turn is complete.
             break
 
         for call in response.tool_calls:
+            # Make the tool call visible before executing it.
             await emit("tool_call", {"tool_name": call.name, "arguments": call.arguments})
             record = ToolCallRecord(
                 session_id=agent_session_id, tool_name=call.name, arguments=call.arguments
@@ -1243,8 +1382,10 @@ async def run_agent_turn(
             await db.commit()
 
             if call.name == "patch_latex_file" and not turn.auto_apply_patches:
+                # Web UI path: propose patch for human approval.
                 payload = await _propose_patch(db, turn, call, record, emit)
             else:
+                # Normal path: execute tool immediately.
                 payload = await _execute_call(db, registry, call, record, emit)
 
             messages.append(
@@ -1273,6 +1414,7 @@ async def _execute_call(
     db: AsyncSession, registry: ToolRegistry, call, record: ToolCallRecord, emit: EmitFn
 ) -> dict:
     try:
+        # Registry validates args and calls the core tool.
         output = await registry.execute(call.name, call.arguments)
     except ToolError as exc:
         await _finish_record(db, record, "failed", None, f"{exc.code}: {exc.message}")
@@ -1286,6 +1428,7 @@ async def _execute_call(
     log.info("agent.tool.completed", tool=call.name)
 
     if call.name == "rank_related_work":
+        # Special event lets UI render citation cards directly.
         await emit("citation_suggestions", {"recommendations": payload.get("recommendations", [])})
     return payload
 
@@ -1296,6 +1439,7 @@ async def _propose_patch(
     """Web-UI flow: preview instead of apply. The pending tool_calls row is the
     handle the accept endpoint uses to apply the patch after user approval."""
     try:
+        # Validate and preview patch without mutating files.
         patch = PATCH_ADAPTER.validate_python(call.arguments.get("patch") or {})
         preview = await preview_patch(db, turn.project_id, patch)
     except (PatchError, ValidationError) as exc:
@@ -1321,6 +1465,14 @@ async def _propose_patch(
         "summary": "Patch proposed to the user for approval. Do not retry unless they reject it.",
     }
 ```
+
+Orchestrator walkthrough:
+
+- The loop is bounded by `MAX_TOOL_ITERATIONS`.
+- Every model-requested tool call is emitted, logged, executed/proposed, and fed back as a tool message.
+- Tool failures are not hidden; they become structured data the model can use to retry.
+- Patch calls are intercepted for web UI approval unless `auto_apply_patches=True`.
+- Results are truncated before storage so `tool_calls` does not become a giant blob table.
 
 ## Acceptance checks
 

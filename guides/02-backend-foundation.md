@@ -14,7 +14,7 @@
 - **The lifespan pattern.** Database engines, drivers, and Redis clients are expensive and hold connection pools. You create them **once** at app startup, stash them on `app.state`, and dispose them at shutdown. Per-request work borrows from the pool. This is the single most important FastAPI production pattern.
 - **Dependency injection.** Route handlers declare what they need (`session = Depends(get_db)`); FastAPI resolves it per-request. Handlers stay testable and free of global imports.
 - **Structured logging.** `structlog` emits one JSON object per event with stable event names (`app.startup`, `health.postgres_failed`). Grep-able, machine-parsable, and what log aggregators expect. Never `print()`.
-- **CORS on day one.** Next.js on `:3000` calling FastAPI on `:8000` is cross-origin. Without the middleware, your first browser fetch fails with an opaque error.
+- **CORS on day one.** Vite on `:3000` calling FastAPI on `:8000` is cross-origin. Without the middleware, your first browser fetch fails with an opaque error.
 
 ---
 

@@ -2,7 +2,7 @@
 
 [← Roadmap](00-ROADMAP.md) | [Next: Backend Foundation →](02-backend-foundation.md)
 
-**What exists when you finish:** a monorepo where `make up` boots six containers (Postgres+pgvector, Neo4j, Redis, FastAPI backend, arq worker, Next.js frontend), a stub health endpoint answers on `:8000`, and a placeholder page renders on `:3000`.
+**What exists when you finish:** a monorepo where `make up` boots six containers (Postgres+pgvector, Neo4j, Redis, FastAPI backend, arq worker, Vite React frontend), a stub health endpoint answers on `:8000`, and a placeholder page renders on `:3000`.
 
 **Effort:** ~30 lines typed, ~250 lines pasted, plus two scaffold commands. Most of this guide is infrastructure you paste and *read* — the learning here is understanding what each service is for, not memorizing YAML.
 
@@ -78,9 +78,9 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 
-# Node / Next.js
+# Node / Vite
 node_modules/
-.next/
+dist/
 out/
 
 # OS / editor
@@ -248,33 +248,33 @@ class WorkerSettings:
 
 ---
 
-## 6. Frontend: scaffold Next.js
+## 6. Frontend: scaffold Vite + React
 
-Don't type a Next.js app from scratch — scaffold it, then own the files that matter (Guide 04). 📋 Run from `citepilot/`:
+Don't type a React app from scratch — scaffold it, then own the files that matter (Guide 04). 📋 Run from `citepilot/`:
 
 ```bash
-pnpm create next-app@latest apps/web \
-  --typescript --tailwind --eslint --app --no-src-dir \
-  --import-alias "@/*" --use-pnpm
+pnpm create vite apps/web --template react-ts
+cd apps/web
+pnpm add @tanstack/react-query zustand zod react-hook-form @uiw/react-codemirror @xyflow/react lucide-react
+pnpm add -D tailwindcss @tailwindcss/postcss @vitejs/plugin-react eslint
 ```
 
-If it prompts for anything else (e.g. Turbopack), accept the default.
-
-Two edits after scaffolding:
+Three edits after scaffolding:
 
 **`apps/web/package.json`** — the dev server must bind to `0.0.0.0` so Docker can expose it (inside a container, the default `localhost` bind is unreachable from your Mac):
 
 ```json
 "scripts": {
-  "dev": "next dev -H 0.0.0.0",
-  ...
+  "dev": "vite --host 0.0.0.0 --port 3000",
+  "build": "tsc -b && vite build",
+  "preview": "vite preview --host 0.0.0.0 --port 3000"
 }
 ```
 
-**`apps/web/app/page.tsx`** ⌨️ TYPE — replace the default page with a placeholder (becomes the project list in Guide 04):
+**`apps/web/src/App.tsx`** ⌨️ TYPE — replace the default page with a placeholder (becomes the project list in Guide 04):
 
 ```tsx
-export default function Home() {
+export default function App() {
   return (
     <main className="flex min-h-screen items-center justify-center">
       <div className="text-center">
@@ -286,6 +286,12 @@ export default function Home() {
     </main>
   );
 }
+```
+
+**`apps/web/src/styles.css`** ⌨️ TYPE — Tailwind v4 can be imported directly:
+
+```css
+@import "tailwindcss";
 ```
 
 ---
@@ -346,7 +352,7 @@ RUN npm install -g pnpm
 
 WORKDIR /app/apps/web
 
-COPY apps/web/package.json apps/web/pnpm-lock.yaml ./
+COPY apps/web/package.json apps/web/pnpm-lock.yaml apps/web/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY apps/web/ ./

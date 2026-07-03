@@ -9,9 +9,9 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 
-# Node / Next.js
+# Node / Vite
 node_modules/
-.next/
+dist/
 out/
 
 # OS / editor

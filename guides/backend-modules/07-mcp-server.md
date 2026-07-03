@@ -11,25 +11,33 @@ Transport is **stdio only**: the client launches the server as a subprocess, so 
 
 MCP clients show your docstrings to the model **verbatim** — the docstring *is* the interface. Write them for a model reader: what it does, what inputs mean, what comes back, when to use it.
 
+**Comment style:** MCP wrappers are intentionally boring. The comments point out where lifecycle, validation, logging, and model-facing descriptions happen.
+
 ---
 
 ## `backend/app/mcp_server/server.py`
 
 ```python
+# FastMCP is the official SDK helper for declaring MCP tools.
 from mcp.server.fastmcp import FastMCP
 
+# register_tools attaches all CitePilot tools to the MCP server.
 from app.mcp_server.tools import register_tools
 
+# Create one local stdio MCP server named "citepilot".
 mcp = FastMCP("citepilot")
+# Register tool wrappers at import time.
 register_tools(mcp)
 
 if __name__ == "__main__":
+    # stdio transport: MCP client launches this process and speaks over stdin/stdout.
     mcp.run()   # stdio transport
 ```
 
 Add the MCP SDK to `backend/pyproject.toml` dependencies and rebuild:
 
 ```toml
+    # Official MCP Python SDK.
     "mcp>=1.2",
 ```
 
@@ -38,16 +46,24 @@ Add the MCP SDK to `backend/pyproject.toml` dependencies and rebuild:
 `MCPRuntime` owns process-wide clients (the server runs outside FastAPI, so it builds its own). `_run` gives every wrapper the same behavior: fresh DB session per call, `ToolError` returned as structured data instead of a crash, and every call logged to `tool_calls` with `session_id = NULL` — MCP calls show up in the same observability table as web-agent calls.
 
 ```python
+# Future annotations keep type hints flexible.
 from __future__ import annotations
 
+# asynccontextmanager gives each tool call a fresh DB session.
 import contextlib
+# UTC timestamps mark tool-call completion.
 from datetime import UTC, datetime
 
+# Redis client for cache/external clients.
 import redis.asyncio as aioredis
+# arq pool lets MCP tools enqueue jobs, same as web tools.
 from arq import create_pool
+# ArqRedis/RedisSettings types configure the queue pool.
 from arq.connections import ArqRedis, RedisSettings
+# FastMCP tool decorator.
 from mcp.server.fastmcp import FastMCP
 
+# Shared Pydantic schemas and core tool implementations.
 from app.agent import schemas as s
 from app.agent import tools as core
 from app.agent.schemas import ToolError
@@ -60,6 +76,7 @@ from app.graph.neo4j_client import create_neo4j_driver
 
 class MCPRuntime:
     def __init__(self):
+        # MCP runs outside FastAPI, so it creates the same clients FastAPI lifespan creates.
         self.settings = get_settings()
         self.engine = create_engine(self.settings)
         self.session_factory = create_session_factory(self.engine)
@@ -68,13 +85,16 @@ class MCPRuntime:
         self._arq_pool: ArqRedis | None = None
 
     async def arq_pool(self) -> ArqRedis:
+        # arq pool creation is async, so lazy-create it on first job-producing tool call.
         if self._arq_pool is None:   # async creation, so lazily on first use
             self._arq_pool = await create_pool(RedisSettings.from_dsn(self.settings.REDIS_URL))
         return self._arq_pool
 
     @contextlib.asynccontextmanager
     async def tool_context(self):
+        # Every MCP tool call gets its own DB session.
         async with self.session_factory() as session:
+            # Build the same ToolContext the web agent uses.
             yield ToolContext(
                 session, self.settings, self.neo4j, self.redis, await self.arq_pool()
             )
@@ -86,20 +106,24 @@ runtime = MCPRuntime()
 async def _run(fn, args) -> dict:
     """One code path for every wrapper: session, logging, structured errors."""
     async with runtime.tool_context() as ctx:
+        # Log MCP calls in the same tool_calls table as web-agent calls.
         record = ToolCallRecord(
             session_id=None, tool_name=fn.__name__, arguments=args.model_dump(mode="json")
         )
         ctx.session.add(record)
         await ctx.session.commit()
         try:
+            # Execute the shared core implementation.
             output = await fn(ctx, args)
         except ToolError as exc:
+            # Return structured tool errors instead of crashing the MCP server.
             record.status = "failed"
             record.error = f"{exc.code}: {exc.message}"
             record.completed_at = datetime.now(UTC)
             await ctx.session.commit()
             return exc.as_tool_result()
         payload = output.model_dump(mode="json")
+        # Store only a small summary for MCP calls.
         record.status = "completed"
         record.result = {"summary": payload.get("summary", "ok")}
         record.completed_at = datetime.now(UTC)
@@ -108,6 +132,7 @@ async def _run(fn, args) -> dict:
 
 
 def register_tools(mcp: FastMCP) -> None:
+    # Each decorated function becomes one MCP tool. The docstring is shown to the model.
     @mcp.tool()
     async def search_papers(
         query: str,
@@ -121,6 +146,7 @@ def register_tools(mcp: FastMCP) -> None:
         Returns titles, years, authors, abstracts, citation counts, and whether
         each paper is already imported."""
         return await _run(
+            # Wrapper builds validated Pydantic input, then delegates to core tool.
             core.search_papers,
             s.SearchPapersInput(
                 query=query, source=source, year_min=year_min, year_max=year_max, limit=limit
@@ -223,6 +249,14 @@ def register_tools(mcp: FastMCP) -> None:
         )
 ```
 
+MCP walkthrough:
+
+- `server.py` owns the MCP server object; `tools.py` owns tool registration.
+- `MCPRuntime` replaces FastAPI lifespan for this standalone process.
+- `_run()` is the shared wrapper pattern: session, audit log, execute, structured error/result.
+- Every MCP wrapper should be thin: build schema, call core tool, return JSON.
+- Tool docstrings are prompts. Bad docstrings cause bad model routing.
+
 Safety rules baked in (be ready to list them): no arbitrary SQL/Cypher/shell tools, everything project-scoped and typed through the same Pydantic models as the web agent, list sizes capped by the input models (`le=` bounds), stdio only.
 
 ## Running it
@@ -232,6 +266,12 @@ Safety rules baked in (be ready to list them): no arbitrary SQL/Cypher/shell too
 ```bash
 npx @modelcontextprotocol/inspector docker compose exec -T backend python -m app.mcp_server.server
 ```
+
+Command walkthrough:
+
+- `npx @modelcontextprotocol/inspector`: launches MCP Inspector.
+- `docker compose exec -T backend`: runs the MCP server inside the backend container without a TTY.
+- `python -m app.mcp_server.server`: starts the stdio MCP server.
 
 **Claude Desktop** — `claude_desktop_config.json`:
 
@@ -249,6 +289,12 @@ npx @modelcontextprotocol/inspector docker compose exec -T backend python -m app
   }
 }
 ```
+
+Config walkthrough:
+
+- `command: "docker"` tells Claude Desktop to launch Docker as the MCP subprocess.
+- `compose -f ... exec -T backend ...` attaches stdio to the backend container's Python process.
+- `-T` matters because MCP stdio must be a clean pipe, not an interactive terminal.
 
 (`-T` disables the TTY so stdio stays a clean pipe. Replace the absolute path.)
 

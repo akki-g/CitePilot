@@ -52,6 +52,17 @@ graph       -> Neo4j driver + Postgres rows
 db          -> SQLAlchemy models/session only
 ```
 
+Direction walkthrough:
+
+- `api/routes -> agent/tools or services`: HTTP routes should validate requests and delegate; they should not contain business logic.
+- `mcp_server -> agent/tools`: MCP exposes the same capabilities as the web agent, so wrappers call the same core tools.
+- `workers -> ingestion/retrieval/latex/graph services`: slow jobs reuse service code instead of duplicating route logic.
+- `agent -> retrieval/ingestion/latex service functions`: the agent calls typed capabilities, not databases or shell commands directly.
+- `retrieval -> db + graph`: GraphRAG reads canonical metadata from Postgres and relationship signals from Neo4j.
+- `ingestion -> db + graph + external clients`: ingestion is allowed to fetch provider data, write canonical rows, and trigger graph sync.
+- `graph -> Neo4j driver + Postgres rows`: graph code mirrors rows and runs Cypher, but it does not know about HTTP or MCP.
+- `db -> SQLAlchemy models/session only`: the database layer is the bottom; it should not import application workflows above it.
+
 Lower layers never import FastAPI routes, MCP wrappers, or worker definitions.
 
 ## Definition of done (backend POC)

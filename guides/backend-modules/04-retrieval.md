@@ -14,6 +14,8 @@ Files in this guide (all complete — type them as-is):
 
 The interview one-liner: *vector search answers "what text is similar?", the graph answers "what is structurally related?" — and the papers you must cite are often structurally related without being textually similar.*
 
+**Comment style:** retrieval snippets include comments on the data flow. The central idea is to keep each signal separate until RRF fuses ranked paper IDs.
+
 ---
 
 ## `backend/app/retrieval/chunking.py`
@@ -21,21 +23,28 @@ The interview one-liner: *vector search answers "what text is similar?", the gra
 One chunk per paper: `title + abstract`. Deliberately **no** synthetic concept/citation-summary chunks — template text clusters with other template text and pollutes top-k, and concept overlap is already a graph signal; encoding it in vector space would double-count it at fusion time.
 
 ```python
+# dataclass is enough for a tiny immutable chunk value object.
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class Chunk:
+    # Always 0 for MVP because each paper has one chunk.
     chunk_index: int
+    # Human-readable section name; later full-text parsing can add more sections.
     section: str
+    # Text that will be embedded.
     text: str
+    # Cheap metadata for future batching/debugging.
     token_count: int | None = None
 
 
 def build_title_abstract_chunk(title: str | None, abstract: str | None) -> Chunk | None:
+    # Strip empty values and keep title before abstract.
     parts = [part.strip() for part in [title, abstract] if part and part.strip()]
     if not parts:
         return None  # bare stub: nothing to embed yet
+    # Separate title and abstract with a blank line so the embedding sees both clearly.
     text = "\n\n".join(parts)
     return Chunk(
         chunk_index=0,
@@ -45,21 +54,33 @@ def build_title_abstract_chunk(title: str | None, abstract: str | None) -> Chunk
     )
 ```
 
+Walkthrough:
+
+- This function is pure and easy to test; ingestion can call it without DB/network dependencies.
+- Returning `None` for bare stubs prevents embedding empty strings.
+- One chunk keeps MVP retrieval simple and avoids double-counting graph concepts in vector space.
+
 ## `backend/app/retrieval/embeddings.py`
 
 Provider-agnostic interface + one real provider + a deterministic fake. The fake is hash-seeded so vector tests are stable and never call an API.
 
 ```python
+# Hashing powers deterministic fake embeddings.
 import hashlib
+# Random generates repeatable pseudo-vectors for tests.
 import random
+# Protocol defines the interface real/fake embedding clients must satisfy.
 from typing import Protocol
 
+# httpx calls the real embedding API.
 import httpx
 
+# Settings supplies provider/model/API-key/dimension.
 from app.config import Settings
 
 
 class EmbeddingClient(Protocol):
+    # Interface used by HybridRetriever. Implementations can be fake or real.
     async def embed_texts(self, texts: list[str]) -> list[list[float]]: ...
 
 
@@ -67,19 +88,23 @@ class FakeEmbeddingClient:
     """Deterministic pseudo-random vectors keyed on the text's hash."""
 
     def __init__(self, dim: int = 1536):
+        # Match settings.EMBEDDING_DIM so tests mirror production vector shape.
         self.dim = dim
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
+            # Hash text into a stable seed so the same text always gets the same vector.
             seed = int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:16], 16)
             rng = random.Random(seed)
+            # Values do not need semantic meaning for unit tests; determinism is enough.
             vectors.append([rng.uniform(-1.0, 1.0) for _ in range(self.dim)])
         return vectors
 
 
 class OpenAIEmbeddingClient:
     def __init__(self, settings: Settings):
+        # Fail at construction if the real provider is selected but not configured.
         if not settings.EMBEDDING_API_KEY:
             raise ValueError("EMBEDDING_API_KEY is required for OpenAI embeddings")
         if not settings.EMBEDDING_MODEL:
@@ -92,6 +117,7 @@ class OpenAIEmbeddingClient:
         await self.client.aclose()
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        # OpenAI embeddings endpoint accepts a batch of strings.
         resp = await self.client.post(
             "https://api.openai.com/v1/embeddings",
             headers={"Authorization": f"Bearer {self.api_key}"},
@@ -99,16 +125,24 @@ class OpenAIEmbeddingClient:
         )
         resp.raise_for_status()
         data = resp.json()["data"]
+        # API may return items with explicit indexes; sort to preserve input order.
         return [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
 
 
 def create_embedding_client(settings: Settings) -> EmbeddingClient:
+    # Test env always uses the fake so tests never call external APIs.
     if settings.APP_ENV == "test":
         return FakeEmbeddingClient(dim=settings.EMBEDDING_DIM)
     if settings.EMBEDDING_PROVIDER == "openai":
         return OpenAIEmbeddingClient(settings)
     raise ValueError(f"Unsupported embedding provider: {settings.EMBEDDING_PROVIDER}")
 ```
+
+Walkthrough:
+
+- Retrieval code should only know about `EmbeddingClient`, not OpenAI specifics.
+- `FakeEmbeddingClient` is essential for deterministic tests.
+- The real provider is isolated behind one adapter, so swapping models later is contained.
 
 (Set `EMBEDDING_MODEL=text-embedding-3-small` in `.env` — 1536 dims, matches the column. The startup dimension check from guide 01 catches any mismatch.)
 
@@ -119,20 +153,28 @@ Search is **global across all imported papers**, never project-filtered — disc
 ⚠️ The asyncpg gotcha this file handles: a raw `text()` query bypasses SQLAlchemy's type machinery, and asyncpg doesn't know how to send a Python list as a `vector`. Passing the embedding as its string literal (`"[0.1,0.2,...]"`) and `CAST`-ing in SQL is the reliable fix. (ORM writes of `PaperChunk.embedding` are fine — the pgvector `Vector` column type stringifies on bind.)
 
 ```python
+# dataclass gives an immutable row shape for search hits.
 from dataclasses import dataclass
+# UUID is the paper/chunk identity type from Postgres.
 from uuid import UUID
 
+# text() runs the hand-written pgvector SQL.
 from sqlalchemy import text
+# AsyncSession is the DB unit of work.
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def to_pgvector_literal(embedding: list[float]) -> str:
+    # asyncpg cannot bind Python lists as pgvector in raw text queries reliably.
+    # Converting to "[...]" and CASTing in SQL makes the type explicit.
     return "[" + ",".join(str(x) for x in embedding) + "]"
 
 
 @dataclass(frozen=True)
 class VectorHit:
+    # Chunk ID lets the UI/tool output cite the supporting text.
     chunk_id: UUID
+    # Paper ID is what fusion/ranking operates on.
     paper_id: UUID
     text: str
     section: str | None
@@ -159,13 +201,16 @@ _SEARCH_SQL = text(
 
 class VectorSearch:
     def __init__(self, session: AsyncSession):
+        # Store the DB session injected by route/tool/worker code.
         self.session = session
 
     async def search(self, query_embedding: list[float], limit: int = 30) -> list[VectorHit]:
+        # Execute global vector search; do not filter to project papers.
         result = await self.session.execute(
             _SEARCH_SQL,
             {"query_embedding": to_pgvector_literal(query_embedding), "limit": limit},
         )
+        # Convert SQLAlchemy rows into a stable typed shape.
         return [
             VectorHit(
                 chunk_id=row.id,
@@ -182,6 +227,13 @@ class VectorSearch:
         ]
 ```
 
+SQL walkthrough:
+
+- `pc.embedding <=> query_vector` is cosine distance under `vector_cosine_ops`.
+- `1 - distance` is easier for humans to read as similarity.
+- `ORDER BY pc.embedding <=> ...` matches the HNSW index operator and makes pgvector use the vector index.
+- Joining `papers` hydrates title/year/stub metadata in the same query.
+
 (`<=>` is cosine *distance*; `1 - distance` = similarity. The `ORDER BY` expression matches the HNSW index operator class, so the index is actually used.)
 
 ## `backend/app/retrieval/graph_search.py`
@@ -189,26 +241,34 @@ class VectorSearch:
 Thin adapter over `graph.queries` — exists so `HybridRetriever` depends on one small object that tests can fake. Passes `GraphCandidate`s through untouched (their `features` feed the explanations).
 
 ```python
+# Neo4j driver type.
 from neo4j import AsyncDriver
 
+# graph.queries contains the actual Cypher; this adapter only delegates.
 from app.graph import queries
+# GraphCandidate is the common graph signal return type.
 from app.graph.queries import GraphCandidate
 
 
 class GraphSearch:
     def __init__(self, driver: AsyncDriver):
+        # Keep just the driver so this object is easy to fake in tests.
         self.driver = driver
 
     async def bibliographic_coupling(self, seeds: list[str], limit: int = 20) -> list[GraphCandidate]:
+        # Papers sharing references with the seed papers.
         return await queries.bibliographic_coupling(self.driver, seeds, limit)
 
     async def co_citation(self, seeds: list[str], limit: int = 20) -> list[GraphCandidate]:
+        # Papers cited alongside the seed papers by third-party papers.
         return await queries.co_citation(self.driver, seeds, limit)
 
     async def shared_concepts(self, seeds: list[str], limit: int = 20) -> list[GraphCandidate]:
+        # Papers connected by concept nodes.
         return await queries.shared_concepts(self.driver, seeds, limit)
 
     async def direct_neighbors(self, seeds: list[str], limit: int = 20) -> list[GraphCandidate]:
+        # One-hop citation neighbors.
         return await queries.direct_neighbors(self.driver, seeds, limit)
 ```
 
@@ -217,15 +277,21 @@ class GraphSearch:
 Why RRF and not `0.5·similarity + 0.2·graph + ...`: the signals live on incompatible scales (cosine ∈ [0,1], citation counts unbounded, distances inverted), so hand-tuned weights are untestable guesswork. RRF uses only **ranks** — scale-free, one parameter (k=60, the literature default), and consensus-rewarding: rank 5 in three independent lists beats rank 1 in one. That property *is* the GraphRAG thesis in math form.
 
 ```python
+# defaultdict starts scores/sources automatically for unseen papers.
 from collections import defaultdict
+# dataclass for immutable fused candidates.
 from dataclasses import dataclass
+# UUID identifies papers across all ranked lists.
 from uuid import UUID
 
 
 @dataclass(frozen=True)
 class FusedCandidate:
+    # Paper being ranked.
     paper_id: UUID
+    # RRF score. Absolute value is less important than ordering.
     score: float
+    # Which signals contained this paper, e.g. ["vector", "co_citation"].
     retrieval_sources: list[str]
 
 
@@ -238,17 +304,23 @@ def rrf_fuse(ranked_lists: dict[str, list[UUID]], k: int = 60) -> list[FusedCand
     scores: dict[UUID, float] = defaultdict(float)
     sources: dict[UUID, list[str]] = defaultdict(list)
 
+    # Iterate over each independent retrieval signal.
     for source_name, papers in ranked_lists.items():
+        # A paper duplicated within one list should only count once.
         seen: set[UUID] = set()
+        # Rank is counted after deduping.
         rank = 0
         for paper_id in papers:
             if paper_id in seen:
                 continue
             seen.add(paper_id)
             rank += 1
+            # RRF contribution: high ranks add slightly more than low ranks.
             scores[paper_id] += 1.0 / (k + rank)
+            # Remember which signal supported this candidate for explanations.
             sources[paper_id].append(source_name)
 
+    # Convert score dictionaries into sorted FusedCandidate objects.
     return sorted(
         (
             FusedCandidate(paper_id=paper_id, score=score, retrieval_sources=sources[paper_id])
@@ -258,17 +330,27 @@ def rrf_fuse(ranked_lists: dict[str, list[UUID]], k: int = 60) -> list[FusedCand
     )
 ```
 
+Fusion walkthrough:
+
+- Inputs are paper ID lists, not raw similarity/count scores.
+- RRF deliberately ignores scale differences across vector similarity and graph counts.
+- `k=60` dampens rank differences so cross-signal consensus matters.
+- Deterministic tie-breaking makes tests stable.
+
 ## `backend/app/retrieval/explain.py`
 
 Reasons are rendered from **computed features, never LLM freeform** — so they can't be hallucinated, and you can debug retrieval by reading them.
 
 ```python
+# dataclass for explanation feature bundle.
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class RetrievalFeatures:
+    # Signal names from RRF.
     retrieval_sources: list[str]
+    # Optional graph feature values used only for the reason text.
     shared_reference_count: int = 0
     co_citation_count: int = 0
     shared_concept_names: tuple[str, ...] = ()
@@ -280,7 +362,9 @@ class RetrievalFeatures:
 
 
 def render_reason(features: RetrievalFeatures) -> str:
+    # Accumulate short evidence-backed phrases.
     parts: list[str] = []
+    # Set membership makes "did this source contribute?" checks simple.
     sources = set(features.retrieval_sources)
 
     if "vector" in sources:
@@ -309,10 +393,17 @@ def render_reason(features: RetrievalFeatures) -> str:
         parts.append("metadata is incomplete — import the full paper before citing")
 
     if not parts:
+        # Fallback should be honest when no explainable feature is present.
         return "Matched by the retrieval system, but no strong explanatory feature was available."
     reason = ", ".join(parts)
     return reason[0].upper() + reason[1:] + "."
 ```
+
+Explanation walkthrough:
+
+- Reasons are deterministic strings based on computed features.
+- The LLM can use these reasons, but it is not allowed to invent them.
+- Stub warning is part of the reason because stubs should be imported before citation insertion.
 
 (Uppercase only the first character — `str.capitalize()` would lowercase everything else and mangle concept names like "GraphRAG".)
 
@@ -321,26 +412,39 @@ def render_reason(features: RetrievalFeatures) -> str:
 The pipeline: embed → vector top-30 → top-5 distinct papers become graph seeds → four graph lists → RRF → hydrate top-k with paper rows, project membership, best supporting chunk, and a rendered reason.
 
 ```python
+# Future annotations keep type hints flexible.
 from __future__ import annotations
 
+# dataclass for result objects.
 from dataclasses import dataclass
+# UUID is the paper/project identity type.
 from uuid import UUID
 
+# select hydrates papers/project membership from Postgres.
 from sqlalchemy import select
+# AsyncSession is the DB unit of work.
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ORM rows for paper metadata and project membership.
 from app.db.models import Paper, ProjectPaper
+# GraphCandidate carries per-signal graph features.
 from app.graph.queries import GraphCandidate
+# Structured retrieval logs.
 from app.logging import get_logger
+# Explanation rendering.
 from app.retrieval.explain import RetrievalFeatures, render_reason
+# RRF fusion.
 from app.retrieval.fusion import rrf_fuse
+# Best vector hits provide supporting snippets.
 from app.retrieval.vector_search import VectorHit
 
+# Module logger.
 log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
 class RetrievalResult:
+    # Final API/tool shape for one recommended paper.
     paper_id: UUID
     title: str | None
     chunk_id: UUID | None
@@ -359,6 +463,7 @@ class HybridRetriever:
     search, session) — which is exactly what makes it testable with fakes."""
 
     def __init__(self, embeddings, vector_store, graph, session: AsyncSession):
+        # Dependency injection makes this class testable with fake components.
         self.embeddings = embeddings
         self.vector_store = vector_store
         self.graph = graph
@@ -445,6 +550,7 @@ class HybridRetriever:
     ) -> list[RetrievalResult]:
         if not candidates:
             return []
+        # Collect final paper IDs to hydrate in two SQL queries.
         ids = [c.paper_id for c in candidates]
         papers = {
             p.id: p
@@ -466,10 +572,12 @@ class HybridRetriever:
 
         results: list[RetrievalResult] = []
         for candidate in candidates:
+            # Skip candidates that no longer exist in Postgres.
             paper = papers.get(candidate.paper_id)
             if paper is None:
                 continue
             hit = best_hit.get(candidate.paper_id)
+            # Merge graph features collected before fusion.
             extra = features_by_paper.get(candidate.paper_id, {})
             features = RetrievalFeatures(
                 retrieval_sources=candidate.retrieval_sources,
@@ -499,6 +607,15 @@ class HybridRetriever:
             )
         return results
 ```
+
+Hybrid walkthrough:
+
+- Query embedding happens once per user request.
+- Vector search produces chunk hits, but fusion ranks papers, so vector hits are deduped by paper.
+- Top vector papers become graph seeds when the user does not provide explicit seeds.
+- Each graph signal produces an independent ranked list.
+- `features_by_paper` keeps explanation details while RRF remains rank-only.
+- `_hydrate()` turns paper IDs back into user-facing metadata/snippets/reasons.
 
 Design points worth being able to defend:
 

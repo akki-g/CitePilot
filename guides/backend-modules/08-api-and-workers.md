@@ -16,6 +16,8 @@ Files in this guide (all complete — type them as-is):
 
 **Why this module:** routes stay thin — validate HTTP, build a `ToolContext`, call the same tool/service functions the agent uses. Workers run everything slow (external APIs, embedding, graph sync, compilation) off the request path. The `jobs` table is the UI's source of truth; arq internals are an implementation detail the frontend never sees.
 
+**Comment style:** API and worker code is glue. The notes below each block explain what boundary each line belongs to: HTTP validation, dependency injection, core tool call, job enqueue, durable status update, or worker side effect.
+
 ---
 
 ## `backend/app/api/router.py`
@@ -35,6 +37,14 @@ api_router.include_router(graph.router, prefix="/graph", tags=["graph"])
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 api_router.include_router(latex.router, prefix="/latex", tags=["latex"])
 ```
+
+Walkthrough:
+
+- `api_router = APIRouter(prefix="/api")`: every route in this file gets the `/api` prefix.
+- `include_router(...)`: mounts each domain's route module into one root router.
+- `health` has no extra prefix, so the final path is `/api/health`.
+- The other modules get prefixes like `/api/projects`, `/api/papers`, and `/api/agent`.
+- This keeps `main.py` clean: it imports only `api_router`.
 
 ## `backend/app/api/routes/health.py`
 
@@ -79,6 +89,14 @@ async def health(request: Request) -> dict:
     status = "ok" if all(value == "ok" for value in checks.values()) else "degraded"
     return {"status": status, **checks}
 ```
+
+Walkthrough:
+
+- `Request` gives access to `request.app.state`, where lifespan stored shared clients.
+- Postgres is checked with `SELECT 1`, Neo4j with `RETURN 1`, Redis with `PING`.
+- Each `try/except` isolates one dependency so a broken store does not hide the others.
+- The endpoint returns HTTP 200 with `status: degraded`; the body is the truthful signal.
+- Structured warning logs make failed dependency checks searchable.
 
 ## `backend/app/api/routes/projects.py`
 
@@ -197,6 +215,15 @@ async def list_project_papers(
     ]
 ```
 
+Walkthrough:
+
+- `DEFAULT_MAIN_TEX` is the first file every new project gets.
+- `ProjectCreate` validates the POST body.
+- `ensure_dev_user()` keeps MVP auth simple while preserving a real user/project foreign key.
+- `session.flush()` assigns `project.id` before creating project files.
+- `ProjectFile(... version=1)` makes optimistic file versioning possible immediately.
+- `list_project_papers()` joins project-specific BibTeX keys to canonical paper metadata.
+
 ## `backend/app/api/routes/files.py`
 
 The versioning policy, exactly: autosave (`explicit: false`) updates content in place; explicit save bumps the version and snapshots; stale `base_version` → 409 carrying the current state so the frontend can reload.
@@ -264,6 +291,14 @@ async def update_file(
     return {"id": str(file.id), "path": file.path, "version": file.version}
 ```
 
+Walkthrough:
+
+- `base_version` is optimistic concurrency control from the editor.
+- A stale save returns `409` plus the current content so the frontend can reload safely.
+- Autosave (`explicit: false`) updates content but does not bump version or create history.
+- Explicit save bumps `version` and inserts a `FileVersion` snapshot.
+- Agent patches snapshot in `latex/patcher.py`, not this route.
+
 ## `backend/app/api/routes/papers.py`
 
 Thin wrappers over the core tools — one `ToolContext`, zero duplicated logic.
@@ -311,6 +346,13 @@ async def paper_import(
     return (await import_paper(ctx, body)).model_dump(mode="json")
 ```
 
+Walkthrough:
+
+- `_ctx(...)` builds the same `ToolContext` used by agent and MCP.
+- The route does not know OpenAlex, jobs, or ingestion details.
+- `SearchPapersInput` and `ImportPaperInput` are shared Pydantic schemas from the agent layer.
+- Returning `model_dump(mode="json")` makes UUIDs and other types JSON-safe.
+
 ## `backend/app/api/routes/jobs.py`
 
 The generic polling endpoint — the frontend polls this while a job is non-terminal.
@@ -340,6 +382,12 @@ async def get_job(job_id: UUID, session: AsyncSession = Depends(get_db)) -> dict
         "error": job.error,
     }
 ```
+
+Walkthrough:
+
+- The UI polls this endpoint while jobs are queued/running.
+- arq job state is intentionally not exposed to the frontend.
+- The database row is the durable truth even if the worker restarts.
 
 ## `backend/app/api/routes/graph.py`
 
@@ -388,6 +436,13 @@ async def expand_graph(
         await session.commit()
     return {"job_id": str(job.id), "status": "queued"}
 ```
+
+Walkthrough:
+
+- `/neighborhood` is read-only and calls the graph query directly.
+- `/expand` creates a durable `jobs` row first, then enqueues arq work.
+- `top_n` is bounded so one request cannot expand an unbounded number of stubs.
+- `queue_job_id` is stored for debugging, but the frontend still polls `/api/jobs/{id}`.
 
 ## `backend/app/api/routes/agent.py`
 
@@ -561,6 +616,15 @@ async def accept_patch(
     return payload
 ```
 
+Walkthrough:
+
+- `sse()` formats one Server-Sent Event frame.
+- `asyncio.Queue` lets the orchestrator produce events while the response yields them immediately.
+- `run()` is the producer task: create LLM, registry, turn context, then run the tool loop.
+- `event_stream()` is the consumer: yield queue items to the browser until a `None` sentinel arrives.
+- The `finally` block cancels the producer if the browser disconnects.
+- Patch proposals stay as pending `tool_calls` until `/patches/{tool_call_id}/accept` applies them.
+
 ## `backend/app/api/routes/latex.py`
 
 Compile goes through the same core tool (which enqueues the arq job); status polling and PDF streaming are plain reads. The PDF endpoint exists because the preview `<iframe>` needs a real URL, not JSON.
@@ -628,6 +692,13 @@ async def get_pdf(compilation_id: UUID, session: AsyncSession = Depends(get_db))
     )
 ```
 
+Walkthrough:
+
+- `compile_route()` is just an HTTP wrapper over the shared `compile_latex` tool.
+- `get_compilation()` returns status/logs/errors for polling.
+- `get_pdf()` streams `application/pdf` because a browser preview needs a real URL.
+- `content_disposition_type="inline"` tells browsers to display instead of download.
+
 ## `backend/app/workers/arq_app.py` (replaces the bootstrap stub)
 
 Worker deps are created **once** in `on_startup` and shared by all jobs via arq's `ctx` — same lifespan philosophy as the API process. `ctx["redis"]` is arq's own pool, used by jobs to enqueue follow-up jobs.
@@ -662,6 +733,14 @@ class WorkerSettings:
     max_jobs = 4
     job_timeout = 300
 ```
+
+Walkthrough:
+
+- `startup()` mirrors FastAPI lifespan for the worker process.
+- `WorkerDeps` is created once and stored in arq's `ctx`.
+- Job functions receive `ctx` and reuse those process-wide clients.
+- `max_jobs=4` keeps local resource use modest.
+- `job_timeout=300` prevents stuck jobs from running forever.
 
 ## `backend/app/workers/jobs.py`
 
@@ -868,6 +947,16 @@ async def compile_latex_job(ctx: dict, compilation_id: str) -> None:
             compilation.id,
         )
 ```
+
+Worker walkthrough:
+
+- `WorkerDeps` owns settings, Postgres engine/session factory, Neo4j driver, and Redis client.
+- `_mark_job_failed()` uses a fresh session because the session that hit an exception may be unusable.
+- `ingest_paper_job()` runs fetch -> normalize -> upsert -> project link -> commit -> Neo4j sync -> embedding job.
+- Postgres is committed before Neo4j sync because Neo4j is derived from durable rows.
+- `expand_citation_graph_job()` promotes useful stubs into full paper rows.
+- `embed_chunks_job()` only embeds chunks with `embedding IS NULL` and batches provider calls.
+- `compile_latex_job()` delegates status/error details to `latex.compiler.compile_project()`.
 
 ## Acceptance checks
 

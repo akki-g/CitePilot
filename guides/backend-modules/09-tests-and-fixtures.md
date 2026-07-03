@@ -20,6 +20,8 @@ Files in this guide (all complete — type them as-is):
 
 Pure unit tests (normalize, bibtex, fusion, sanitizer) run anywhere; the DB-backed ones (patcher, hybrid, agent stream) run inside the backend container against compose services. `asyncio_mode = "auto"` in `pyproject.toml` means async tests need no decorators.
 
+**Comment style:** tests are documentation with teeth. The walkthroughs below explain which production bug each test is meant to catch.
+
 ---
 
 ## `backend/app/tests/conftest.py`
@@ -75,6 +77,14 @@ async def project(db_session: AsyncSession) -> Project:
     return proj
 ```
 
+Fixture walkthrough:
+
+- `client`: creates the FastAPI app in-process and runs lifespan so `app.state` clients exist.
+- `ASGITransport`: avoids real network sockets while exercising actual routes.
+- `db_session`: gives tests direct DB access for setup/assertions.
+- `project`: creates a real project row owned by the dev user, used by DB-backed tests.
+- These fixtures deliberately avoid external APIs and LLM providers.
+
 ## `backend/app/tests/test_health.py`
 
 ```python
@@ -87,6 +97,12 @@ async def test_health_reports_all_services(client):
     assert body["neo4j"] == "ok"
     assert body["redis"] == "ok"
 ```
+
+Test walkthrough:
+
+- This is an integration smoke test for FastAPI lifespan and all three stores.
+- If it fails, later backend tests probably cannot be trusted yet.
+- It proves `/api/health` does real connectivity checks, not a hardcoded response.
 
 ## `backend/app/tests/test_normalize.py`
 
@@ -144,6 +160,13 @@ def test_normalize_openalex_work_fixture():
     assert {c.name for c in np.concepts} == {"Knowledge graphs", "Information retrieval"}
 ```
 
+Test walkthrough:
+
+- DOI tests protect dedup correctness.
+- Title normalization protects the last-resort title+year match path.
+- Abstract reconstruction catches the OpenAlex inverted-index shape.
+- Fixture normalization proves the DTO mapping works without hitting OpenAlex.
+
 ## `backend/app/tests/test_bibtex.py`
 
 ```python
@@ -199,6 +222,13 @@ def test_rekey_bibtex_swaps_only_the_key():
     assert "title = {Something}" in rekeyed
 ```
 
+Test walkthrough:
+
+- Key tests protect stable `\cite{...}` key generation.
+- Collision tests protect projects with multiple papers that would otherwise share a key.
+- Hostile-title escaping catches LaTeX-breaking characters before compile time.
+- `rekey_bibtex()` ensures Crossref-provided entries use the project key.
+
 ## `backend/app/tests/test_fusion.py`
 
 ```python
@@ -234,6 +264,13 @@ def test_rrf_tie_order_is_deterministic():
     second = rrf_fuse({"two": [b], "one": [a]})   # same input, different dict order
     assert [c.paper_id for c in first] == [c.paper_id for c in second] == [a, b]
 ```
+
+Test walkthrough:
+
+- Consensus test proves the whole reason to use RRF.
+- Empty input test keeps retrieval safe when vector/graph return nothing.
+- Dedup test prevents one signal from inflating a paper by repeating it.
+- Tie-order test makes retrieval tests deterministic.
 
 ## `backend/app/tests/test_hybrid_retrieval.py`
 
@@ -318,6 +355,13 @@ async def test_hybrid_includes_vector_and_graph_candidates(db_session):
     assert "co-cited" in by_id[graph_paper.id].reason
     assert all(r.reason for r in results)
 ```
+
+Test walkthrough:
+
+- Fake components keep the test focused on orchestration, not providers/databases.
+- Vector-only candidate proves semantic retrieval contributes.
+- Graph-only candidate proves structural retrieval contributes.
+- Reason assertions prove the result is explainable, not just scored.
 
 ## `backend/app/tests/test_latex_patcher.py`
 
@@ -442,6 +486,13 @@ async def test_preview_does_not_apply(db_session, tex_file):
     assert tex_file.content == CONTENT and tex_file.version == 1
 ```
 
+Patcher test walkthrough:
+
+- Success tests prove content changes, version bump, and snapshots happen together.
+- Failure tests prove stale/ambiguous/missing anchors do not mutate content.
+- Multiline anchor test matches real LaTeX patch behavior.
+- Preview test proves UI patch proposals are non-mutating.
+
 ## `backend/app/tests/test_path_sanitizer.py`
 
 ```python
@@ -463,6 +514,12 @@ def test_unsafe_paths(path):
     with pytest.raises(UnsafePathError):
         sanitize_project_path(path)
 ```
+
+Sanitizer test walkthrough:
+
+- Safe paths are the ordinary project file paths the app should allow.
+- Unsafe paths cover absolute paths, traversal, hidden files, backslashes, spaces, null bytes, and empty input.
+- These tests protect every file/compile/patch entrypoint that accepts a path.
 
 ## `backend/app/tests/test_agent_stream.py`
 
@@ -587,6 +644,14 @@ async def test_tool_error_flows_back_into_conversation(db_session, project):
     assert tool_messages and "anchor_ambiguous" in tool_messages[0].content
 ```
 
+Agent-stream test walkthrough:
+
+- The event-order test proves the UI can render progress as tools run.
+- Tool-call persistence proves observability is durable.
+- Message persistence proves conversation state is saved.
+- The error-flow test proves failed tools are fed back to the model as data.
+- `FakeLLMClient` makes all of this testable without provider calls.
+
 ## Fixtures
 
 ### `backend/app/tests/fixtures/openalex_work.json`
@@ -630,6 +695,14 @@ async def test_tool_error_flows_back_into_conversation(db_session, project):
   }
 }
 ```
+
+Fixture walkthrough:
+
+- `openalex_work.json`: full detail response for normalization/import tests.
+- `openalex_search.json`: search response shape for paper search tests.
+- `crossref_bibtex.txt`: publisher-style BibTeX for re-keying tests.
+- `semantic_scholar_paper.json`: optional enrichment fixture for future tests.
+- Fixtures are intentionally tiny but include the weird fields that matter: DOI URL, inverted abstract, references, authorships, concepts.
 
 ### `backend/app/tests/fixtures/openalex_search.json`
 
@@ -701,3 +774,11 @@ cd backend && pytest app/tests/test_normalize.py app/tests/test_bibtex.py \
 ```
 
 The acceptance rule for the whole project: every ⭐ core file has a test that fails before you implement it and passes after. That's how the build stays fast without becoming a black box.
+
+Testing philosophy recap:
+
+- Unit tests protect pure logic you will hand-write.
+- Integration tests protect app wiring and database behavior.
+- Fakes replace LLMs/embeddings wherever possible.
+- JSON fixtures replace external scholarly APIs.
+- Tests should fail loudly when an architectural invariant is broken: dedup, stubs, exact anchors, bounded tool loop, and RRF consensus.
