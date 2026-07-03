@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: citepilot-postgres
+    environment:
+      POSTGRES_DB: citepilot
+      POSTGRES_USER: citepilot
+      POSTGRES_PASSWORD: citepilot
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citepilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: citepilot-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/citepilot-password
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    ports: ["7474:7474", "7687:7687"]
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7
+    container_name: citepilot-redis
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: { context: ., dockerfile: infra/docker/backend.Dockerfile }
+    container_name: citepilot-backend
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      neo4j:    { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend:/app/backend
+      - latex_artifacts:/tmp/citepilot-latex
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: { context: ., dockerfile: infra/docker/worker.Dockerfile }
+    container_name: citepilot-worker
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      neo4j:    { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    volumes:
+      - ./backend:/app/backend
+      - latex_artifacts:/tmp/citepilot-latex
+    command: arq app.workers.arq_app.WorkerSettings
+
+  web:
+    build: { context: ., dockerfile: infra/docker/web.Dockerfile }
+    container_name: citepilot-web
+    env_file: .env
+    depends_on: [backend]
+    ports: ["3000:3000"]
+    volumes:
+      - ./apps/web:/app/apps/web
+      - /app/apps/web/node_modules
+    command: pnpm dev
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  latex_artifacts:

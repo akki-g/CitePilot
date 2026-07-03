@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy[asyncio]
+asyncpg
+alembic
+pgvector
+neo4j
+redis
+arq
+httpx
+tenacity
+structlog

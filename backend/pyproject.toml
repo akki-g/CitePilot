@@ -1,0 +1,44 @@
+[project]
+name = "citepilot-backend"
+version = "0.1.0"
+description = "CitePilot backend: FastAPI + GraphRAG over a scientific knowledge graph"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",            # HTTP API framework
+    "uvicorn[standard]>=0.30",   # ASGI server
+    "pydantic>=2.9",             # typed request/response/tool models
+    "pydantic-settings>=2.5",    # env-based configuration
+    "sqlalchemy[asyncio]>=2.0.35", # async ORM/core for Postgres
+    "asyncpg>=0.29",             # async Postgres driver
+    "alembic>=1.13",             # database migrations
+    "pgvector>=0.3",             # Vector column type for SQLAlchemy
+    "neo4j>=5.24",               # official async Neo4j driver
+    "redis>=5.0",                # async Redis client (cache)
+    "arq>=0.26",                 # async-native job queue on Redis
+    "httpx>=0.27",               # async HTTP client for external APIs
+    "tenacity>=9.0",             # retry with exponential backoff
+    "structlog>=24.4",           # structured JSON logging
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "asgi-lifespan>=2.1",        # runs FastAPI lifespan inside tests
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["app/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
