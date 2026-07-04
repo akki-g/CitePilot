@@ -58,4 +58,3 @@ async def update_file(
         )
     await session.commit()
     return {"id": str(file.id), "path": file.path, "version": file.version}
-
