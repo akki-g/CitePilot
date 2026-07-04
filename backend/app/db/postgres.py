@@ -12,7 +12,7 @@ from app.logging import get_logger
 log = get_logger(__name__)
 
 # pool_pre_ping validates connections before use
-def create_enging(settings: Settings) -> AsyncEngine:
+def create_engine(settings: Settings) -> AsyncEngine:
     return create_async_engine(settings.DATABASE_URL, pool_pre_ping=True) 
 
 # expire on commit -> mandatory w async sessions; otherwise touching an ORM object after commit triggers a lazy refresh, which blows up under asyncio (greenlet errors)
@@ -48,3 +48,7 @@ async def check_embedding_dimension(engine:AsyncEngine, expected_dim: int) -> No
             f"EMBEDDING_DIM={expected_dim} does not match paper_chuncks.embedding vector({actual_dim})"
             "Change the env var or write a migration, do not mix dims"
         )
+    
+
+# AsyncEngine is expensive and owns the connection pool, so it belongs in the fastapi lifespan
+# AsyncSession is cheap and short lived so each request/job gets its own

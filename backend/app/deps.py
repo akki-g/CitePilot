@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 
-def get_app_settingsz(request: Request) -> Settings:
+def get_app_settings(request: Request) -> Settings:
     # settings was creates during lifespan startup and storted on app.state
     return request.app.state.settings
 
