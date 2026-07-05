@@ -202,7 +202,7 @@ def _node_dict(node, is_seed: bool = False) -> dict:
 
 async def two_hop_neighborhood(driver: AsyncDriver, paper_id: str, per_hop: int = 15) -> dict:
     """Nodes + edges for the graph panel: seed, capped hop-1 papers in both dirs
-    and every CITES edge amont thar node set"""
+    and every CITES edge amount thar node set"""
 
     records, _, _ = await driver.execute_query(
         _TWO_HOP_NEIGHBORHOOD, paper_id=paper_id, per_hop=per_hop

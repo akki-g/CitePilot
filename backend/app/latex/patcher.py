@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from sqlalchemy import select
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.db.models import FileVersion, ProjectFile
 from app.latex.sanitizer import sanitize_project_path
 
 from app.logging import get_logger
+
 
 log = get_logger(__name__)
 
@@ -38,6 +39,7 @@ class InsertAfterPatch(BaseModel):
 
 Patch = ReplaceTextPatch | InsertAfterPatch
 
+PATCH_ADAPTER: TypeAdapter[Patch] = TypeAdapter(Patch)
 
 class PatchError(Exception):
     """
@@ -163,4 +165,3 @@ async def apply_patch(session: AsyncSession, project_id: UUID, patch: Patch) -> 
 # exact once anchors prevent silent wrong location edits
 # preview_patch() powers human approval in web UI
 # apply patch is direct for MCP use, where versioning is the safety net
-

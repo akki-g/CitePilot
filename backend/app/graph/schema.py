@@ -24,7 +24,7 @@ CONSTRAINT_STATEMENTS = [
 ]
 
 async def apply_constraints(driver: AsyncDriver) -> None:
-    # open one short lived write sessoin for schema setup
+    # open one short lived write session for schema setup
     async with driver.session() as session:
         # run statements one at a time so failures are easy to spot
         for statement in CONSTRAINT_STATEMENTS:
