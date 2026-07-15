@@ -31,3 +31,6 @@ guides/
 *.md
 !README.md
 !infra/**/*.md
+
+*.png
+
