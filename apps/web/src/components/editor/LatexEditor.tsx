@@ -21,7 +21,7 @@ export function LatexEditor({ value, path, onChange, onSelectionChange }: LatexE
             highlightActiveLine: true,
             bracketMatching: true,
           }}
-          theme="dark"
+          theme="light"
           onChange={onChange}
           onUpdate={(update) => {
             const selection = update.state.sliceDoc(

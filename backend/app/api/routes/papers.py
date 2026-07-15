@@ -8,15 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.schemas import GetPaperInput, ImportPaperInput, SearchPapersInput, ToolError
 from app.agent.tools import ToolContext, get_paper, import_paper, search_papers
 from app.config import Settings
-from app.db.models import Paper, ProjectPaper
+from app.db.models import Paper, ProjectPaper, User
+from app.auth.dependencies import get_owned_project, require_verified_user
 from app.deps import get_app_settings, get_arq_pool, get_db, get_neo4j, get_redis
 from app.ingestion.bibtex import BibtexPaper, generate_fallback_bibtex
 
 router = APIRouter()
 
 
-def _ctx(session, settings, neo4j, redis, arq_pool) -> ToolContext:
-    return ToolContext(session, settings, neo4j, redis, arq_pool)
+def _ctx(session, settings, neo4j, redis, arq_pool, user) -> ToolContext:
+    return ToolContext(session, settings, neo4j, redis, arq_pool, user_id=user.id)
 
 
 @router.post("/search")
@@ -27,8 +28,11 @@ async def paper_search(
     neo4j=Depends(get_neo4j),
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    user: User = Depends(require_verified_user),
 ) -> dict:
-    ctx = _ctx(session, settings, neo4j, redis, arq_pool)
+    if body.project_id is not None:
+        await get_owned_project(session, user, body.project_id)
+    ctx = _ctx(session, settings, neo4j, redis, arq_pool, user)
     return (await search_papers(ctx, body)).model_dump(mode="json")
 
 
@@ -40,8 +44,10 @@ async def paper_import(
     neo4j=Depends(get_neo4j),
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    user: User = Depends(require_verified_user),
 ) -> dict:
-    ctx = _ctx(session, settings, neo4j, redis, arq_pool)
+    await get_owned_project(session, user, body.project_id)
+    ctx = _ctx(session, settings, neo4j, redis, arq_pool, user)
     return (await import_paper(ctx, body)).model_dump(mode="json")
 
 
@@ -54,13 +60,16 @@ async def paper_detail(
     neo4j=Depends(get_neo4j),
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    user: User = Depends(require_verified_user),
 ) -> dict:
     """Full metadata for one paper, used by the graph detail panel.
 
     Includes the project bibtex_key and a rendered BibTeX entry when project_id
     is provided and the paper belongs to that project.
     """
-    ctx = _ctx(session, settings, neo4j, redis, arq_pool)
+    if project_id is not None:
+        await get_owned_project(session, user, project_id)
+    ctx = _ctx(session, settings, neo4j, redis, arq_pool, user)
     try:
         output = await get_paper(ctx, GetPaperInput(paper_id=paper_id, project_id=project_id))
     except ToolError as exc:

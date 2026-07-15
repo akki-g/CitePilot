@@ -113,6 +113,11 @@ def _apply_to_content(content: str, patch: Patch) -> str:
     return content.replace(anchor, anchor + patch.new_text, 1)
 
 
+def preview_patch_content(content: str, patch: Patch) -> str:
+    """Apply the exact-anchor rules to in-memory content without persistence."""
+    return _apply_to_content(content, patch)
+
+
 def _check_version(file: ProjectFile, patch: Patch) -> None:
     # Reject stale patches built against old file contents.
     if patch.base_version != file.version:

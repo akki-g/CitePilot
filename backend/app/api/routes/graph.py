@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Citation, Job, Paper, ProjectPaper
+from app.auth.dependencies import get_owned_project, require_verified_user
+from app.db.models import Citation, Job, Paper, ProjectPaper, User
 from app.deps import get_arq_pool, get_db, get_neo4j
 from app.graph.queries import two_hop_neighborhood
 
@@ -19,7 +20,11 @@ async def neighborhood(paper_id: UUID, per_hop: int = 15, neo4j=Depends(get_neo4
 
 
 @router.get("/project/{project_id}")
-async def project_graph(project_id: UUID, session: AsyncSession = Depends(get_db)) -> dict:
+async def project_graph(
+    project_id: UUID,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
+) -> dict:
     """Project papers plus their strongest shared foundations.
 
     Postgres is authoritative for this overview, so it stays fast and remains
@@ -27,6 +32,7 @@ async def project_graph(project_id: UUID, session: AsyncSession = Depends(get_db
     papers made most real bibliographies look disconnected; the capped related
     set reveals which external papers connect the project together.
     """
+    await get_owned_project(session, user, project_id)
     rows = (
         await session.execute(
             select(Paper, ProjectPaper.bibtex_key)
@@ -139,7 +145,9 @@ async def expand_graph(
     body: ExpandRequest,
     session: AsyncSession = Depends(get_db),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    user: User = Depends(require_verified_user),
 ) -> dict:
+    await get_owned_project(session, user, body.project_id)
     job = Job(
         job_type="expand_citation_graph",
         input={"project_id": str(body.project_id), "top_n": body.top_n},

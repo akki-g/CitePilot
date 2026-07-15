@@ -35,12 +35,12 @@ type PaperNodeData = {
 type PaperNode = Node<PaperNodeData, "paper">;
 
 const ROLE_STYLE: Record<PaperRole, { border: string; badge: string; dot: string }> = {
-  seed: { border: "border-indigo-400/80", badge: "text-indigo-200", dot: "#818cf8" },
-  reference: { border: "border-cyan-400/40", badge: "text-cyan-200", dot: "#22d3ee" },
-  citer: { border: "border-emerald-400/40", badge: "text-emerald-200", dot: "#34d399" },
-  both: { border: "border-violet-400/50", badge: "text-violet-200", dot: "#a78bfa" },
-  project: { border: "border-indigo-400/35", badge: "text-indigo-200", dot: "#818cf8" },
-  foundation: { border: "border-amber-400/45", badge: "text-amber-200", dot: "#fbbf24" },
+  seed: { border: "border-indigo-400/80", badge: "text-indigo-200", dot: "#3157d5" },
+  reference: { border: "border-cyan-400/50", badge: "text-cyan-200", dot: "#227b76" },
+  citer: { border: "border-emerald-400/50", badge: "text-emerald-300", dot: "#227b5a" },
+  both: { border: "border-violet-400/50", badge: "text-violet-300", dot: "#5b55a7" },
+  project: { border: "border-indigo-400/45", badge: "text-indigo-200", dot: "#3157d5" },
+  foundation: { border: "border-amber-400/50", badge: "text-amber-300", dot: "#d96c3b" },
 };
 
 function PaperGraphNode({ data, selected }: NodeProps<PaperNode>) {
@@ -139,7 +139,7 @@ function layoutGraph(
   const flowEdges: Edge[] = edges.map((edge, index) => {
     const touchesSeed = edge.source === seed.id || edge.target === seed.id;
     const color =
-      edge.source === seed.id ? "#22d3ee" : edge.target === seed.id ? "#34d399" : "#3c465e";
+      edge.source === seed.id ? "#227b76" : edge.target === seed.id ? "#227b5a" : "#9aa198";
     return {
       id: `${edge.source}-${edge.target}-${index}`,
       source: edge.source,
@@ -207,8 +207,8 @@ function layoutOverview(
       target: edge.target,
       type: "smoothstep",
       animated: false,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#64748b" },
-      style: { stroke: "#64748b", strokeWidth: 1.2, opacity: 0.65 },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#7d8792" },
+      style: { stroke: "#7d8792", strokeWidth: 1.2, opacity: 0.65 },
     }));
 
   return { nodes: flowNodes, edges: flowEdges, seedId: null };
@@ -314,14 +314,14 @@ export function CitationGraph({
         <div className="hidden items-center gap-3 lg:flex">
           {paperId ? (
             <>
-              <LegendDot color="#818cf8" label="seed" />
-              <LegendDot color="#22d3ee" label="seed cites" />
-              <LegendDot color="#34d399" label="cites seed" />
+              <LegendDot color="#3157d5" label="seed" />
+              <LegendDot color="#227b76" label="seed cites" />
+              <LegendDot color="#227b5a" label="cites seed" />
             </>
           ) : (
             <>
-              <LegendDot color="#818cf8" label="project paper" />
-              <LegendDot color="#fbbf24" label="shared foundation" />
+              <LegendDot color="#3157d5" label="project paper" />
+              <LegendDot color="#d96c3b" label="shared foundation" />
             </>
           )}
         </div>
@@ -380,7 +380,7 @@ export function CitationGraph({
         {graph.nodes.length > 0 ? (
           <ReactFlow
             key={graph.seedId ?? paperId ?? "overview"}
-            colorMode="dark"
+            colorMode="light"
             nodes={graph.nodes}
             edges={graph.edges}
             nodeTypes={NODE_TYPES}
@@ -393,14 +393,14 @@ export function CitationGraph({
             nodesDraggable
             onNodeClick={(_, node) => setInspectedPaperId(node.id)}
           >
-            <Background color="#1c2333" gap={20} variant={BackgroundVariant.Dots} />
+            <Background color="#dfe1da" gap={20} variant={BackgroundVariant.Dots} />
             <Controls showInteractive={false} position="bottom-left" />
             {mode === "full" ? (
               <MiniMap
                 pannable
                 zoomable
                 className="!bg-ink-850"
-                maskColor="rgba(6, 8, 13, 0.75)"
+                maskColor="rgba(247, 247, 243, 0.76)"
                 nodeColor={(node) =>
                   ROLE_STYLE[((node.data as PaperNodeData | undefined)?.role ?? "reference") as PaperRole]
                     .dot

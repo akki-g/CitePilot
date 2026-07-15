@@ -7,6 +7,7 @@ export async function refreshWorkspace(projectId: string): Promise<void> {
     queryClient.invalidateQueries({ queryKey: ["citation-neighborhood"] }),
     queryClient.invalidateQueries({ queryKey: ["project-graph", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["paper-search", projectId] }),
+    queryClient.invalidateQueries({ queryKey: ["latest-compilation", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["projects"] }),
   ]);
 }

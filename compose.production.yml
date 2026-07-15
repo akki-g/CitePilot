@@ -1,0 +1,143 @@
+name: citepilot
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-app-security: &app-security
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env.production}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *default-logging
+    networks: [data]
+
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env.production}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX:-768m}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512m}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+    logging: *default-logging
+    networks: [data]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.production}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *default-logging
+    networks: [data]
+
+  backend:
+    image: citepilot-backend:${CITEPILOT_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: infra/docker/backend.production.Dockerfile
+    restart: unless-stopped
+    env_file: ${CITEPILOT_ENV_FILE:-.env.production}
+    depends_on:
+      postgres: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - latex_artifacts:/tmp/citepilot-latex
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
+    networks: [app, data]
+    <<: *app-security
+
+  worker:
+    image: citepilot-backend:${CITEPILOT_IMAGE_TAG:-local}
+    command: ["arq", "app.workers.arq_app.WorkerSettings"]
+    restart: unless-stopped
+    env_file: ${CITEPILOT_ENV_FILE:-.env.production}
+    depends_on:
+      postgres: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - latex_artifacts:/tmp/citepilot-latex
+    logging: *default-logging
+    networks: [app, data]
+    <<: *app-security
+
+  web:
+    image: citepilot-web:${CITEPILOT_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: infra/docker/web.production.Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    depends_on:
+      backend: { condition: service_healthy }
+    ports:
+      - "${CITEPILOT_BIND_ADDRESS:-127.0.0.1}:${CITEPILOT_WEB_PORT:-3001}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    logging: *default-logging
+    networks: [app]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/cache/nginx:size=32m,mode=0755
+      - /var/run:size=4m,mode=0755
+
+networks:
+  app:
+  data:
+    internal: true
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  latex_artifacts:

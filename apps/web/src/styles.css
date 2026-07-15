@@ -8,37 +8,69 @@
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* dark IDE surface scale, deepest to lightest */
-  --color-ink-950: #06080d;
-  --color-ink-900: #0a0d14;
-  --color-ink-850: #0e121b;
-  --color-ink-800: #121724;
-  --color-ink-750: #171d2c;
-  --color-ink-700: #1f2637;
+  /* Warmed toward the portfolio without changing CitePilot's UI structure. */
+  --color-ink-950: #f7f7f3;
+  --color-ink-900: #ffffff;
+  --color-ink-850: #fbfbf8;
+  --color-ink-800: #f0f1ec;
+  --color-ink-750: #e8e9e3;
+  --color-ink-700: #dfe1da;
 
-  --color-edge: #1d2536;
-  --color-edge-2: #2c3650;
+  --color-edge: #dfe1da;
+  --color-edge-2: #c9cdc4;
 
-  /* text scale */
-  --color-fog: #7d8798;
-  --color-mist: #b6c0d2;
-  --color-snow: #e9edf5;
+  --color-fog: #66707d;
+  --color-mist: #45515f;
+  --color-snow: #19202a;
 
-  --color-accent: #818cf8;
-  --color-accent-deep: #6366f1;
+  --color-accent: #3157d5;
+  --color-accent-deep: #3157d5;
+
+  --color-indigo-100: #e8edff;
+  --color-indigo-200: #3157d5;
+  --color-indigo-300: #3157d5;
+  --color-indigo-400: #5675df;
+  --color-indigo-500: #3157d5;
+  --color-indigo-950: #1d3480;
+  --color-violet-300: #665fb0;
+  --color-violet-400: #7770bd;
+  --color-violet-500: #665fb0;
+  --color-violet-600: #565097;
+  --color-cyan-100: #e4f3f1;
+  --color-cyan-200: #227b76;
+  --color-cyan-300: #227b76;
+  --color-cyan-400: #3b918b;
+  --color-emerald-200: #227b5a;
+  --color-emerald-300: #227b5a;
+  --color-emerald-400: #318c69;
+  --color-amber-100: #7c4b1f;
+  --color-amber-200: #8a5220;
+  --color-amber-300: #9a5b22;
+  --color-amber-400: #b47635;
+  --color-red-300: #b44343;
+  --color-red-400: #c35a5a;
 }
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   background: var(--color-ink-950);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge-2) transparent;
 }
 
 body {
-  margin: 0;
   min-width: 320px;
-  font-family: var(--font-sans);
-  background: var(--color-ink-950);
+  min-height: 100vh;
+  margin: 0;
   color: var(--color-snow);
+  background: var(--color-ink-950);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -49,23 +81,40 @@ select {
   font: inherit;
 }
 
-::selection {
-  background: rgba(129, 140, 248, 0.35);
+button:not(:disabled),
+[role="button"] {
+  cursor: pointer;
 }
 
-/* slim dark scrollbars everywhere */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #2c3650 transparent;
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.025em;
 }
+
+::selection {
+  color: #ffffff;
+  background: rgba(49, 87, 213, 0.82);
+}
+
+:focus-visible {
+  outline: 3px solid rgba(49, 87, 213, 0.28);
+  outline-offset: 2px;
+}
+
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
 }
+
 *::-webkit-scrollbar-thumb {
-  background: #2c3650;
-  border-radius: 8px;
+  border: 2px solid transparent;
+  border-radius: 99px;
+  background: var(--color-edge-2);
+  background-clip: padding-box;
 }
+
 *::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -80,11 +129,11 @@ select {
     transform: translateY(0);
   }
 }
+
 .fade-up {
   animation: fade-up 0.18s ease-out both;
 }
 
-/* three-dot thinking indicator */
 @keyframes dot-pulse {
   0%,
   80%,
@@ -97,17 +146,19 @@ select {
     transform: scale(1);
   }
 }
+
 .thinking-dot {
   animation: dot-pulse 1.2s infinite ease-in-out;
 }
+
 .thinking-dot:nth-child(2) {
   animation-delay: 0.15s;
 }
+
 .thinking-dot:nth-child(3) {
   animation-delay: 0.3s;
 }
 
-/* blinking caret shown at the end of streaming assistant text */
 @keyframes caret-blink {
   0%,
   49% {
@@ -118,6 +169,7 @@ select {
     opacity: 0;
   }
 }
+
 .stream-caret {
   display: inline-block;
   width: 7px;
@@ -129,22 +181,53 @@ select {
   animation: caret-blink 1s step-end infinite;
 }
 
-/* xyflow chrome tuned for the dark theme */
 .react-flow__attribution {
+  color: var(--color-fog);
   background: transparent;
-  color: #4b5568;
 }
+
 .react-flow__controls {
-  box-shadow: none;
+  overflow: hidden;
   border: 1px solid var(--color-edge-2);
   border-radius: 8px;
-  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(25, 32, 42, 0.07);
 }
+
 .react-flow__controls-button {
-  background: var(--color-ink-800);
   border-bottom: 1px solid var(--color-edge);
+  background: var(--color-ink-900);
   fill: var(--color-mist);
 }
+
 .react-flow__controls-button:hover {
-  background: var(--color-ink-700);
+  background: var(--color-ink-800);
+}
+
+/* Keep CodeMirror aligned with the warm application palette. */
+.cm-editor,
+.cm-scroller,
+.cm-content {
+  color: var(--color-snow) !important;
+  background: var(--color-ink-900) !important;
+}
+
+.cm-gutters {
+  border-right: 1px solid var(--color-edge) !important;
+  color: var(--color-fog) !important;
+  background: var(--color-ink-950) !important;
+}
+
+.cm-activeLine,
+.cm-activeLineGutter {
+  background: #eef1ff !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

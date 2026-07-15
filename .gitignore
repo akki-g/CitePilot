@@ -1,5 +1,9 @@
 # Secrets
 .env
+.env.production
+.env.production.local
+.deployed-sha
+backups/
 
 # Python
 __pycache__/
@@ -26,3 +30,4 @@ guides/
 
 *.md
 !README.md
+!infra/**/*.md

@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import FileVersion, Project, ProjectFile
+from app.auth.dependencies import get_owned_project, require_verified_user
+from app.db.models import FileVersion, ProjectFile, User
 from app.deps import get_db
 from app.latex.sanitizer import UnsafePathError, sanitize_project_path
 
@@ -34,7 +35,12 @@ MAX_IMPORT_BYTES = 2_000_000
 
 
 @router.get("/projects/{project_id}/files")
-async def list_files(project_id: UUID, session: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_files(
+    project_id: UUID,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
+) -> list[dict]:
+    await get_owned_project(session, user, project_id)
     files = (
         await session.execute(
             select(ProjectFile)
@@ -54,7 +60,9 @@ async def update_file(
     file_id: UUID,
     body: FileUpdate,
     session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
 ) -> dict:
+    await get_owned_project(session, user, project_id)
     file = await session.get(ProjectFile, file_id)
     if file is None or file.project_id != project_id:
         raise HTTPException(status_code=404, detail="file not found")
@@ -81,10 +89,10 @@ async def import_files(
     project_id: UUID,
     body: FileImportRequest,
     session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
 ) -> dict:
     """Import browser-selected text assets into a LaTeX project in one request."""
-    if await session.get(Project, project_id) is None:
-        raise HTTPException(status_code=404, detail="project not found")
+    await get_owned_project(session, user, project_id)
 
     total_bytes = sum(len(item.content.encode("utf-8")) for item in body.files)
     if total_bytes > MAX_IMPORT_BYTES:

@@ -1,4 +1,4 @@
-import { apiBaseUrl, ApiError } from "./api";
+import { apiBaseUrl, ApiError, csrfToken } from "./api";
 
 export type AgentEvent = {
   event: string;
@@ -43,7 +43,11 @@ export async function streamAgentTurn(
 ): Promise<void> {
   const response = await fetch(`${apiBaseUrl}/api/agent/stream`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+      ...(csrfToken() ? { "x-csrf-token": csrfToken() } : {}),
+    },
     body: JSON.stringify(body),
     signal,
   });

@@ -1,0 +1,162 @@
+name: CI and deploy to EC2
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: citepilot
+          POSTGRES_USER: citepilot
+          POSTGRES_PASSWORD: citepilot-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U citepilot -d citepilot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/citepilot-ci
+        ports:
+          - 7474:7474
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474 >/dev/null || exit 1"
+          --health-interval 10s
+          --health-timeout 8s
+          --health-retries 20
+
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://citepilot:citepilot-ci@localhost:5432/citepilot
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: citepilot-ci
+      REDIS_URL: redis://localhost:6379/0
+      OPENALEX_MAILTO: ci@example.com
+      AUTH_SECRET: ci-only-secret-that-is-longer-than-32-characters
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install backend dependencies
+        run: uv sync --project backend --extra dev --locked
+      - name: Lint backend
+        run: uv run --project backend ruff check backend/app
+      - name: Apply test migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+      - name: Run backend tests
+        run: uv run --project backend pytest -q backend/app/tests
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@10.34.4 --activate
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - name: Lint frontend
+        working-directory: apps/web
+        run: pnpm lint
+      - name: Build frontend
+        working-directory: apps/web
+        env:
+          VITE_API_BASE_URL: ""
+        run: pnpm build
+
+  deploy:
+    name: Deploy exact commit
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: citepilot-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ vars.CITEPILOT_URL }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: citepilot-${{ github.run_id }}
+      - name: Deploy through Systems Manager
+        env:
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          APP_DIR: ${{ vars.EC2_APP_DIR }}
+          DEPLOY_USER: ${{ vars.EC2_DEPLOY_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]]
+          [[ "$APP_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          remote_command="sudo -u $DEPLOY_USER bash -lc 'set -o pipefail; cd $APP_DIR && git fetch --quiet origin $RELEASE_SHA && git show $RELEASE_SHA:infra/deploy/deploy.sh | bash -s -- $RELEASE_SHA $APP_DIR'"
+          parameters="$(jq -cn --arg command "$remote_command" '{commands: [$command]}')"
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "CitePilot $RELEASE_SHA" \
+            --parameters "$parameters" \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          set +e
+          aws ssm wait command-executed \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
+          wait_status=$?
+          set -e
+
+          invocation="$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID")"
+          jq -r '.StandardOutputContent // ""' <<<"$invocation"
+          jq -r '.StandardErrorContent // ""' <<<"$invocation" >&2
+          final_status="$(jq -r '.Status' <<<"$invocation")"
+          [[ "$wait_status" -eq 0 && "$final_status" == "Success" ]]

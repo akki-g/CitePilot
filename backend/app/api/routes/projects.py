@@ -3,13 +3,13 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
+from app.auth.dependencies import get_owned_project, require_verified_user
 from app.db.models import Paper, Project, ProjectFile, ProjectPaper, User
-from app.deps import get_app_settings, get_db
+from app.deps import get_db
 
 router = APIRouter()
 
@@ -34,25 +34,20 @@ Start writing here.
 """
 
 class ProjectCreate(BaseModel):
-    name: str
-    description: str | None = None
-
-async def ensure_dev_user(session: AsyncSession, settings: Settings) -> User:
-    user = await session.get(User, UUID(settings.DEV_USER_ID))  
-    if user is None:
-        user = User(
-            id=UUID(settings.DEV_USER_ID), email="dev@citepilot.local", display_name="Dev User"
-        )
-        session.add(user)
-        await session.flush()
-
-    return user
-
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
 
 @router.get("")
-async def list_projects(session: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_projects(
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
+) -> list[dict]:
     projects = (
-        await session.execute(select(Project).order_by(Project.created_at.desc()))
+        await session.execute(
+            select(Project)
+            .where(Project.user_id == user.id)
+            .order_by(Project.created_at.desc())
+        )
     ).scalars().all()
 
     return [
@@ -72,9 +67,8 @@ async def list_projects(session: AsyncSession = Depends(get_db)) -> list[dict]:
 async def create_project(
     body: ProjectCreate,
     session: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_app_settings)
+    user: User = Depends(require_verified_user),
 ) -> dict:
-    user = await ensure_dev_user(session, settings)
     project = Project(user_id=user.id, name=body.name, description=body.description)
     session.add(project)
     await session.flush()
@@ -91,8 +85,11 @@ async def create_project(
 
 @router.get("/{project_id}/papers")
 async def list_project_papers(
-    project_id: UUID, session: AsyncSession = Depends(get_db)
+    project_id: UUID,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
 ) -> list[dict]:
+    await get_owned_project(session, user, project_id)
     rows = (
         await session.execute(
             select(Paper, ProjectPaper.bibtex_key)

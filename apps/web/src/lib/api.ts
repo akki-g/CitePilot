@@ -2,20 +2,26 @@ import { z } from "zod";
 
 import {
   citationNeighborhoodSchema,
+  authProvidersSchema,
+  authUserSchema,
   compilationSchema,
   compileLatexOutputSchema,
   healthSchema,
   importPaperOutputSchema,
   jobSchema,
+  latestCompilationSchema,
   paperDetailSchema,
   paperSearchOutputSchema,
   projectFileSchema,
   projectPaperSchema,
   projectSchema,
   type CitationNeighborhood,
+  type AuthProviders,
+  type AuthUser,
   type Compilation,
   type Health,
   type Job,
+  type LatestCompilation,
   type PaperDetail,
   type PaperSearchResult,
   type Project,
@@ -30,7 +36,15 @@ export class ApiError extends Error {
   detail: unknown;
 
   constructor(status: number, detail: unknown) {
-    super(typeof detail === "string" ? detail : `Request failed with ${status}`);
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "detail" in detail
+          ? typeof detail.detail === "string"
+            ? detail.detail
+            : JSON.stringify(detail.detail)
+          : `Request failed with ${status}`;
+    super(message);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
@@ -57,8 +71,10 @@ export async function apiFetch<S extends z.ZodTypeAny>(
 ): Promise<z.output<S>> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "content-type": "application/json",
+      ...(csrfToken() ? { "x-csrf-token": csrfToken() } : {}),
       ...init?.headers,
     },
   });
@@ -69,6 +85,62 @@ export async function apiFetch<S extends z.ZodTypeAny>(
   }
 
   return schema.parse(payload);
+}
+
+export function csrfToken(): string {
+  if (typeof document === "undefined") return "";
+  const cookie = document.cookie
+    .split("; ")
+    .find((entry) => entry.startsWith("citepilot_csrf="));
+  return cookie ? decodeURIComponent(cookie.slice("citepilot_csrf=".length)) : "";
+}
+
+export function getCurrentUser(): Promise<AuthUser> {
+  return apiFetch("/api/auth/me", authUserSchema);
+}
+
+export function getAuthProviders(): Promise<AuthProviders> {
+  return apiFetch("/api/auth/providers", authProvidersSchema);
+}
+
+export function signup(body: {
+  email: string;
+  password: string;
+  display_name: string;
+}): Promise<{ message: string; delivery: string; verification_url?: string | null }> {
+  return apiFetch("/api/auth/signup", z.object({ message: z.string(), delivery: z.string(), verification_url: z.string().nullish() }), {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function resendVerification(email: string): Promise<{ message: string; delivery: string; verification_url?: string | null }> {
+  return apiFetch("/api/auth/resend-verification", z.object({ message: z.string(), delivery: z.string(), verification_url: z.string().nullish() }), {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function login(body: { email: string; password: string }): Promise<AuthUser> {
+  return apiFetch("/api/auth/login", authUserSchema, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function verifyEmail(token: string): Promise<AuthUser> {
+  return apiFetch("/api/auth/verify-email", authUserSchema, {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function logout(): Promise<null> {
+  return apiFetch("/api/auth/logout", z.null(), { method: "POST" });
+}
+
+export function googleLoginUrl(): string {
+  return `${apiBaseUrl}/api/auth/oauth/google`;
 }
 
 export function getHealth(): Promise<Health> {
@@ -194,6 +266,13 @@ export function compileLatex(projectId: string): Promise<{ compilation_id: strin
 
 export function getCompilation(compilationId: string): Promise<Compilation> {
   return apiFetch(`/api/latex/compilations/${compilationId}`, compilationSchema);
+}
+
+export function getLatestCompilation(projectId: string): Promise<LatestCompilation> {
+  return apiFetch(
+    `/api/latex/projects/${encodeURIComponent(projectId)}/latest`,
+    latestCompilationSchema,
+  );
 }
 
 export function getPdfUrl(compilationId: string): string {

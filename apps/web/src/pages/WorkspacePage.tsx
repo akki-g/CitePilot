@@ -182,6 +182,12 @@ export function WorkspacePage({ project, onBack, backIcon: BackIcon }: Workspace
     setDraft(`${draft.trimEnd()}\n\n${citation}\n`);
   }
 
+  async function saveActiveDraftBeforeCompile() {
+    if (activeFile && isDirty) {
+      await saveMutation.mutateAsync({ content: draft, explicit: true });
+    }
+  }
+
   const agentAside = agentOpen ? (
     <aside
       className={[
@@ -371,7 +377,12 @@ export function WorkspacePage({ project, onBack, backIcon: BackIcon }: Workspace
 
           {activeTab === "pdf" ? (
             <div className="min-h-0 flex-1 p-3">
-              <PdfPreview projectId={project.id} mode="full" />
+              <PdfPreview
+                projectId={project.id}
+                mode="full"
+                hasUnsavedChanges={isDirty}
+                onBeforeCompile={saveActiveDraftBeforeCompile}
+              />
             </div>
           ) : null}
 

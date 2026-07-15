@@ -16,9 +16,9 @@ from app.agent.orchestrator import AgentTurnContext, run_agent_turn
 from app.agent.schemas import PatchLatexFileInput, ToolError
 from app.agent.tool_registry import build_default_registry
 from app.agent.tools import ToolContext, patch_latex_file
-from app.api.routes.projects import ensure_dev_user
+from app.auth.dependencies import get_owned_project, require_verified_user
 from app.config import Settings
-from app.db.models import AgentMessage, AgentSession, Project, ToolCallRecord
+from app.db.models import AgentMessage, AgentSession, ToolCallRecord, User
 from app.deps import get_app_settings, get_arq_pool, get_db, get_llm, get_neo4j, get_redis
 from app.logging import get_logger
 
@@ -39,7 +39,16 @@ def sse(event: str, payload: dict) -> str:
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: UUID, session: AsyncSession = Depends(get_db)) -> list[dict]:
+async def get_messages(
+    session_id: UUID,
+    session: AsyncSession = Depends(get_db),
+    user: User = Depends(require_verified_user),
+) -> list[dict]:
+    owned_session = await session.scalar(
+        select(AgentSession).where(AgentSession.id == session_id, AgentSession.user_id == user.id)
+    )
+    if owned_session is None:
+        raise HTTPException(status_code=404, detail="agent session not found")
     rows = (
         await session.execute(
             select(AgentMessage)
@@ -62,17 +71,19 @@ async def stream_agent(
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
     llm: LLMClient = Depends(get_llm),
+    user: User = Depends(require_verified_user),
 ):
-    project = await session.get(Project, body.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="project not found")
+    project = await get_owned_project(session, user, body.project_id)
 
     if body.session_id:
         agent_session = await session.get(AgentSession, body.session_id)
-        if agent_session is None or agent_session.project_id != project.id:
+        if (
+            agent_session is None
+            or agent_session.project_id != project.id
+            or agent_session.user_id != user.id
+        ):
             raise HTTPException(status_code=404, detail="agent session not found")
     else:
-        user = await ensure_dev_user(session, settings)
         agent_session = AgentSession(
             project_id=project.id, user_id=user.id, title=body.message[:80]
         )
@@ -92,7 +103,7 @@ async def stream_agent(
             # ack immediately so the client knows the stream is alive and can
             # bind the session id before the first (slow) LLM call returns
             await emit("session", {"session_id": str(agent_session.id)})
-            ctx = ToolContext(session, settings, neo4j, redis, arq_pool)
+            ctx = ToolContext(session, settings, neo4j, redis, arq_pool, user_id=user.id)
             registry = build_default_registry(ctx)
             turn = AgentTurnContext(
                 project_id=project.id,
@@ -140,16 +151,22 @@ async def accept_patch(
     neo4j=Depends(get_neo4j),
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    user: User = Depends(require_verified_user),
 ) -> dict:
-    record = await session.get(ToolCallRecord, tool_call_id)
+    record = await session.scalar(
+        select(ToolCallRecord)
+        .join(AgentSession, AgentSession.id == ToolCallRecord.session_id)
+        .where(ToolCallRecord.id == tool_call_id, AgentSession.user_id == user.id)
+    )
     if record is None or record.tool_name != "patch_latex_file":
         raise HTTPException(status_code=404, detail="patch proposal not found")
     if record.status != "pending":
         raise HTTPException(status_code=409, detail=f"patch already {record.status}")
 
-    ctx = ToolContext(session, settings, neo4j, redis, arq_pool)
+    ctx = ToolContext(session, settings, neo4j, redis, arq_pool, user_id=user.id)
     try:
         args = PatchLatexFileInput.model_validate(record.arguments)
+        await get_owned_project(session, user, args.project_id)
         output = await patch_latex_file(ctx, args)
     except ToolError as exc:
         record.status = "failed"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+from uuid import UUID
 from arq.connections import ArqRedis
 
 from neo4j import AsyncDriver
@@ -54,19 +55,26 @@ class ToolContext:
             settings: Settings,
             neo4j: AsyncDriver,
             redis: Redis,
-            arq_pool: ArqRedis | None = None
+            arq_pool: ArqRedis | None = None,
+            user_id: UUID | None = None,
     ):
         self.session = session
         self.settings = settings
         self.neo4j = neo4j
         self.redis = redis
         self.arq_pool = arq_pool
+        # MCP/workers may operate as trusted internal callers (None). Browser
+        # requests always set this so project-scoped tools enforce tenancy too.
+        self.user_id = user_id
 
 
 async def _require_project(ctx: ToolContext, project_id) -> Project:
     # fix: was `ctx.session.execute.get(...)` — .get is a method on the session itself,
     # not on execute; the old form raised AttributeError on every project-scoped tool
-    project = await ctx.session.get(Project, project_id)
+    query = select(Project).where(Project.id == project_id)
+    if ctx.user_id is not None:
+        query = query.where(Project.user_id == ctx.user_id)
+    project = await ctx.session.scalar(query)
     if project is None:
         raise ToolError("not_found", f"Project {project_id} does not exist")
     return project

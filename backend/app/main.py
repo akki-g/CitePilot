@@ -7,11 +7,14 @@ from contextlib import asynccontextmanager
 import redis.asyncio as aioredis
 from arq import create_pool
 from arq.connections import RedisSettings
+from authlib.integrations.starlette_client import OAuth
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.router import api_router
-from app.config import get_settings
+from app.auth.middleware import CSRFMiddleware
+from app.config import get_settings, validate_production_settings
 from app.db.postgres import check_embedding_dimension, create_engine, create_session_factory
 from app.graph.neo4j_client import create_neo4j_driver
 from app.graph.schema import apply_constraints
@@ -22,6 +25,7 @@ from app.logging import configure_logging, get_logger
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # parse settings once at startup; configure logging before startup work that might log
     settings = get_settings()
+    validate_production_settings(settings)
     configure_logging()
     log = get_logger(__name__)
 
@@ -40,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # so later turns keep their HTTP/TLS connection warm.
     app.state.llm = None
     app.state.llm_lock = asyncio.Lock()
+    app.state.demo_compile_semaphore = asyncio.Semaphore(2)
 
     # ensure Neo4j uniqueness constraints/indexes exist before graph sync runs
     await apply_constraints(app.state.neo4j)
@@ -64,13 +69,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     # app factory lets tests create isolated app instances
     settings = get_settings()
+    validate_production_settings(settings)
     app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+    app.state.settings = settings
+
+    oauth = OAuth()
+    if settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET:
+        oauth.register(
+            name="google",
+            client_id=settings.GOOGLE_CLIENT_ID,
+            client_secret=settings.GOOGLE_CLIENT_SECRET,
+            server_metadata_url=settings.GOOGLE_DISCOVERY_URL,
+            client_kwargs={"scope": "openid email profile"},
+        )
+    app.state.oauth = oauth
+
+    # Authlib uses this short-lived signed cookie only for OAuth state/nonce. Login
+    # sessions are separate opaque tokens backed by Postgres.
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.AUTH_SECRET,
+        session_cookie="citepilot_oauth",
+        max_age=600,
+        same_site="lax",
+        https_only=settings.SESSION_COOKIE_SECURE,
+    )
+    app.add_middleware(CSRFMiddleware)
     # browser frontend runs on a different origin from FastAPI, so allow it
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.FRONTEND_URL],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # The demo compiler reports its server-side allowance in this header.
+        # Without explicitly exposing it, browsers hide the value from fetch()
+        # and the UI incorrectly falls back to zero after the first preview.
+        expose_headers=["X-Demo-Remaining"],
     )
     # mount all `/api/...` routes
     app.include_router(api_router)

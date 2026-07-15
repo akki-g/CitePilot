@@ -3,6 +3,8 @@
 
 import asyncio # runs tectonic subprocess w timeout support
 import shutil # copies finished PDF artifacts and deletes temp dir
+import tempfile
+from dataclasses import dataclass
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +23,64 @@ log = get_logger(__name__)
 
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class EphemeralCompilation:
+    pdf: bytes
+    logs: str
+
+
+class EphemeralCompilationError(Exception):
+    def __init__(self, message: str, logs: str = ""):
+        super().__init__(message)
+        self.logs = logs
+
+
+async def compile_ephemeral(
+    settings: Settings,
+    files: list[tuple[str, str]],
+    main_file_path: str = "main.tex",
+) -> EphemeralCompilation:
+    """Compile caller-supplied files without touching Postgres or durable artifacts."""
+    safe_main = sanitize_project_path(main_file_path)
+    base = Path(settings.LATEX_WORKDIR)
+    base.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="demo-", dir=base) as temp:
+        workdir = Path(temp)
+        outdir = workdir / "out"
+        outdir.mkdir()
+        for logical_path, content in files:
+            target = workdir / sanitize_project_path(logical_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
+        proc = await asyncio.create_subprocess_exec(
+            "tectonic",
+            safe_main,
+            "--outdir",
+            str(outdir),
+            cwd=workdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=settings.LATEX_COMPILE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise EphemeralCompilationError("Preview compilation timed out") from exc
+
+        logs = (stdout + stderr).decode("utf-8", errors="replace")[-8000:]
+        pdf_path = outdir / Path(safe_main).with_suffix(".pdf").name
+        if proc.returncode != 0 or not pdf_path.exists():
+            raise EphemeralCompilationError("LaTeX compilation failed", logs)
+        if pdf_path.stat().st_size > 5 * 1024 * 1024:
+            raise EphemeralCompilationError("Demo preview is too large", logs)
+        return EphemeralCompilation(pdf=pdf_path.read_bytes(), logs=logs)
 
 async def _mark_failed(
         session: AsyncSession, compilation_id: UUID, error: str, logs: str | None = None

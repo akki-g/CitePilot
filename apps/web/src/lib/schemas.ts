@@ -13,6 +13,18 @@ export const healthSchema = z.object({
   note: z.string().optional(),
 });
 
+export const authUserSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  display_name: z.string().nullish(),
+  avatar_url: z.string().nullish(),
+  email_verified: z.boolean(),
+});
+
+export const authProvidersSchema = z.object({
+  google: z.boolean(),
+});
+
 export const projectSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -120,6 +132,15 @@ export const compilationSchema = z.object({
   logs: z.string().nullish(),
   error: z.string().nullish(),
   has_pdf: z.boolean(),
+  created_at: z.string().nullish(),
+  completed_at: z.string().nullish(),
+});
+
+export const latestCompilationSchema = z.object({
+  compilation: compilationSchema.nullable(),
+  latest_attempt: compilationSchema.nullable(),
+  is_stale: z.boolean(),
+  source_updated_at: z.string().nullish(),
 });
 
 export const importPaperOutputSchema = z.object({
@@ -158,6 +179,8 @@ export const recommendationSchema = z.object({
 });
 
 export type Health = z.infer<typeof healthSchema>;
+export type AuthUser = z.infer<typeof authUserSchema>;
+export type AuthProviders = z.infer<typeof authProvidersSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type ProjectFile = z.infer<typeof projectFileSchema>;
 export type ProjectPaper = z.infer<typeof projectPaperSchema>;
@@ -167,5 +190,6 @@ export type GraphNode = z.infer<typeof graphNodeSchema>;
 export type GraphEdge = z.infer<typeof graphEdgeSchema>;
 export type CitationNeighborhood = z.infer<typeof citationNeighborhoodSchema>;
 export type Compilation = z.infer<typeof compilationSchema>;
+export type LatestCompilation = z.infer<typeof latestCompilationSchema>;
 export type PaperDetail = z.infer<typeof paperDetailSchema>;
 export type Recommendation = z.infer<typeof recommendationSchema>;
