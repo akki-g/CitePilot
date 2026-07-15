@@ -1,0 +1,37 @@
+{
+  "id": "https://openalex.org/W123",
+  "doi": "https://doi.org/10.1000/Test.DOI",
+  "display_name": "Graph Retrieval Augmented Generation",
+  "publication_year": 2024,
+  "publication_date": "2024-01-15",
+  "cited_by_count": 42,
+  "abstract_inverted_index": {
+    "Graph": [0],
+    "retrieval": [1],
+    "uses": [2],
+    "citations": [3]
+  },
+  "referenced_works": [
+    "https://openalex.org/WREF1",
+    "https://openalex.org/WREF2"
+  ],
+  "authorships": [
+    {
+      "author_position": "first",
+      "author": {
+        "id": "https://openalex.org/A1",
+        "display_name": "Ada Lovelace"
+      }
+    }
+  ],
+  "concepts": [
+    { "display_name": "Knowledge graphs", "score": 0.9 },
+    { "display_name": "Information retrieval", "score": 0.8 }
+  ],
+  "primary_location": {
+    "source": { "display_name": "Test Conference" }
+  },
+  "open_access": {
+    "oa_url": "https://example.com/paper.pdf"
+  }
+}

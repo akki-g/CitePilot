@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import redis.asyncio as aioredis
@@ -123,8 +124,17 @@ async def expand_citation_graph_job(ctx: dict, job_id: str) -> None:
             promoted: list[str] = []
             client = OpenAlexClient(deps.settings, deps.redis)
             try:
-                for stub in stubs:
-                    work = await client.get_work(stub.openalex_id)
+                # OpenAlex fetches dominate enrichment time. Keep database and
+                # graph writes ordered, but overlap a small, polite number of
+                # independent network requests.
+                semaphore = asyncio.Semaphore(5)
+
+                async def fetch_work(stub: Paper) -> tuple[Paper, dict]:
+                    async with semaphore:
+                        return stub, await client.get_work(stub.openalex_id)
+
+                fetched = await asyncio.gather(*(fetch_work(stub) for stub in stubs))
+                for stub, work in fetched:
                     np = normalize_openalex_work(work)
                     paper, cited = await ingest_normalized_paper(session, np)
                     await session.commit()

@@ -1,7 +1,9 @@
 from __future__ import annotations
-from dataclasses import dataclass
 
+import asyncio
+from dataclasses import dataclass
 from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +23,8 @@ log = get_logger(__name__)
 class RetrievalResult:
     paper_id: UUID
     title: str | None
-    chunk: UUID | None
+    # fix: field was named `chunk` but _hydrate constructs RetrievalResult(chunk_id=...)
+    chunk_id: UUID | None
     text: str | None
     score: float
     retrieval_sources: list[str]
@@ -30,8 +33,6 @@ class RetrievalResult:
     is_stub: bool
     publication_year: int | None = None
     cited_by_count: int = 0
-
-
 
 class HybridRetriever:
     """
@@ -46,20 +47,20 @@ class HybridRetriever:
         self.session = session
 
     async def retrieve(
-            self,
-            project_id: UUID,
-            query: str,
-            seed_paper_ids: list[UUID] | None = None,
-            limit: int = 10,
+        self,
+        project_id: UUID,
+        query: str,
+        seed_paper_ids: list[UUID] | None = None,
+        limit: int = 10,
     ) -> list[RetrievalResult]:
-        
         # embed the query
         query_embedding = (await self.embeddings.embed_texts([query]))[0]
 
         # vector list: top 30 chunks -> deduped ranked paper ist
         # remembering each paper's best supporting chunk
         hits = await self.vector_store.search(query_embedding, limit=30)
-        vector_papers: list[UUID]
+        # fix: was a bare annotation `vector_papers: list[UUID]` with no value — UnboundLocalError on append
+        vector_papers: list[UUID] = []
         best_hit: dict[UUID, VectorHit] = {}
         for hit in hits:
             if hit.paper_id not in best_hit:
@@ -78,10 +79,15 @@ class HybridRetriever:
         neighbors: list[GraphCandidate] = []
 
         if seed_strs:
-            coupling = await self.graph.bibliographic_coupling(seed_strs, limit=20)
-            co_citation = await self.graph.co_citation(seed_strs, limit=20)
-            shared_concepts = await self.graph.shared_concepts(seed_strs, limit=20)
-            neighbors = await self.graph.direct_neighbors(seed_strs, limit=20)
+            # These signals are independent ranked lists. Running them together
+            # changes no ranking semantics and reduces graph latency from the
+            # sum of four Neo4j round trips to roughly the slowest one.
+            coupling, co_citation, shared_concepts, neighbors = await asyncio.gather(
+                self.graph.bibliographic_coupling(seed_strs, limit=20),
+                self.graph.co_citation(seed_strs, limit=20),
+                self.graph.shared_concepts(seed_strs, limit=20),
+                self.graph.direct_neighbors(seed_strs, limit=20),
+            )
 
 
         features_by_paper: dict[UUID, dict] = {}
@@ -117,7 +123,8 @@ class HybridRetriever:
             fused=len(fused),
         )
 
-        return self._hydrate(fused[:limit], project_id, best_hit, features_by_paper)
+        # fix: was missing `await` — returned a coroutine object instead of the result list
+        return await self._hydrate(fused[:limit], project_id, best_hit, features_by_paper)
 
 
     async def _hydrate(
@@ -195,4 +202,3 @@ class HybridRetriever:
 # each graph signal produced an independent ranked list
 # features by paper keeps explanation details while RRF remains rank-only
 # _hydrate() turns paper IDs back into user-facing metadata/snippets/reasons
-

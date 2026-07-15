@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.llm.providers import create_llm_client
+from app.agent.llm.base import LLMClient
 from app.agent.orchestrator import AgentTurnContext, run_agent_turn
 from app.agent.schemas import PatchLatexFileInput, ToolError
 from app.agent.tool_registry import build_default_registry
@@ -19,7 +19,7 @@ from app.agent.tools import ToolContext, patch_latex_file
 from app.api.routes.projects import ensure_dev_user
 from app.config import Settings
 from app.db.models import AgentMessage, AgentSession, Project, ToolCallRecord
-from app.deps import get_app_settings, get_arq_pool, get_db, get_neo4j, get_redis
+from app.deps import get_app_settings, get_arq_pool, get_db, get_llm, get_neo4j, get_redis
 from app.logging import get_logger
 
 router = APIRouter()
@@ -61,6 +61,7 @@ async def stream_agent(
     neo4j=Depends(get_neo4j),
     redis=Depends(get_redis),
     arq_pool: ArqRedis = Depends(get_arq_pool),
+    llm: LLMClient = Depends(get_llm),
 ):
     project = await session.get(Project, body.project_id)
     if project is None:
@@ -84,8 +85,13 @@ async def stream_agent(
         await queue.put(sse(event_name, payload))
 
     async def run() -> None:
-        llm = create_llm_client(settings)
+        # fix: create_llm_client used to run before the try block — a config error
+        # (e.g. missing LLM_API_KEY) killed the task before any event or the
+        # None sentinel reached the queue, so the SSE response hung forever
         try:
+            # ack immediately so the client knows the stream is alive and can
+            # bind the session id before the first (slow) LLM call returns
+            await emit("session", {"session_id": str(agent_session.id)})
             ctx = ToolContext(session, settings, neo4j, redis, arq_pool)
             registry = build_default_registry(ctx)
             turn = AgentTurnContext(
@@ -102,9 +108,6 @@ async def stream_agent(
             log.error("agent.stream.failed", session_id=str(agent_session.id), error=str(exc))
             await queue.put(sse("error", {"message": str(exc)}))
         finally:
-            aclose = getattr(llm, "aclose", None)
-            if aclose:
-                await aclose()
             await queue.put(None)   # sentinel: stream is over
 
     task = asyncio.create_task(run())

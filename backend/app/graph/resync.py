@@ -21,7 +21,8 @@ async def main() -> None:
         await apply_constraints(driver)
 
         # use 1 db session for the rebuild
-        async with session_factory as session:
+        # fix: was `async with session_factory as session` — the factory must be called
+        async with session_factory() as session:
             await resync_graph(session, driver)
 
     finally:

@@ -34,6 +34,9 @@ class InsertAfterPatch(BaseModel):
     # insert new text immediately after a unique anchor
     operation: Literal["insert_after"]
     path: str
+    # fix: base_version was missing — _check_version reads patch.base_version, so every
+    # insert_after patch raised AttributeError (and skipped the stale-patch safety net)
+    base_version: int
     anchor_text: str
     new_text: str
 
@@ -52,7 +55,9 @@ class PatchError(Exception):
 
         self.code = code
         self.message = message
-        self.details = details
+        # fix: was `self.details = details`, leaving details as None when omitted;
+        # consumers treat details as a dict
+        self.details = details or {}
 
 
 
@@ -69,7 +74,8 @@ async def _load_file(session: AsyncSession, project_id: UUID, path: str) -> Proj
     ).scalar_one_or_none()
 
     if file is None:
-        raise PatchError("file not found", f"No project file at path '{safe_path}'")
+        # fix: error code was "file not found" — codes are machine-readable, keep snake_case
+        raise PatchError("file_not_found", f"No project file at path '{safe_path}'")
 
     return file
 
@@ -138,7 +144,8 @@ async def apply_patch(session: AsyncSession, project_id: UUID, patch: Patch) -> 
     new_content = _apply_to_content(file.content, patch) # raises before any mutation
 
     file.content = new_content
-    file_version += 1
+    # fix: was `file_version += 1` (undefined name, NameError) — the file row's version must bump
+    file.version += 1
     # snapshot is the undo/audit story for AI edits
     session.add(
         FileVersion(

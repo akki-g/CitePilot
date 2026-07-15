@@ -27,6 +27,7 @@ class ToolError(Exception):
 class SearchPapersInput(BaseModel):
     query: str
     source: Literal["local", "openalex"] = "openalex"
+    project_id: UUID | None = None
     year_min: int | None = None
     year_max: int | None = None
     limit: int = Field(default=10, ge=1, le=50)

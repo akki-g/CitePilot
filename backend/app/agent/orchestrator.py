@@ -27,6 +27,11 @@ MAX_TOOL_ITERATIONS = 8
 # tool call results can be very large, so db storage is capped
 RESULT_TRUNCATE_BYTES = 4096
 
+# Long-lived browser conversations should not become slower on every turn.
+# Keep the most recent eight exchanges; the system prompt and live editor
+# context are always added separately.
+HISTORY_MESSAGE_LIMIT = 16
+
 # emit(event_name, payload) pushes an SSE event to the client
 EmitFn = Callable[[str, dict], Awaitable[None]]
 
@@ -52,10 +57,15 @@ async def _load_history(db: AsyncSession, session_id: UUID) -> list[Message]:
         await db.execute(
             select(AgentMessage)
             .where(AgentMessage.session_id == session_id)
-            .order_by(AgentMessage.created_at)
+            .order_by(AgentMessage.created_at.desc())
+            .limit(HISTORY_MESSAGE_LIMIT)
         )
     ).scalars().all()
-    return [Message(role=r.role, content=r.content) for r in rows if r.role in ("user", "assistant")]
+    return [
+        Message(role=r.role, content=r.content)
+        for r in reversed(rows)
+        if r.role in ("user", "assistant")
+    ]
 
 
 async def run_agent_turn(
@@ -76,21 +86,38 @@ async def run_agent_turn(
         Message(
             role="user",
             content=build_user_context(
-                turn.project_name, turn.active_file_path, turn.selected_text, user_message
+                str(turn.project_id),
+                turn.project_name,
+                turn.active_file_path,
+                turn.selected_text,
+                user_message,
             ),
         ),
     ]
     db.add(AgentMessage(session_id=agent_session_id, role="user", content=user_message))
-    await db.commit
+    # fix: was `await db.commit` (missing parentheses) — awaited the method object instead of committing
+    await db.commit()
 
-    final_text = ""
+    final_parts: list[str] = []
+    # providers that implement stream() push token deltas to the UI as they
+    # arrive; others fall back to one message_delta with the whole response
+    stream_fn = getattr(llm, "stream", None)
+
+    async def on_text(chunk: str) -> None:
+        await emit("message_delta", {"text": chunk})
+
     for _ in range(MAX_TOOL_ITERATIONS):
-        response = await llm.complete(messages, tools=registry.specs())
+        if stream_fn is not None:
+            response = await stream_fn(messages, tools=registry.specs(), on_text=on_text)
+        else:
+            response = await llm.complete(messages, tools=registry.specs())
+            if response.text:
+                await emit("message_delta", {"text": response.text})
 
         if response.text:
-            # stream text to ui as message_delta event
-            final_text = response.text
-            await emit("message_delta", {"text": response.text})
+            # fix: was `final_text = response.text` — text from earlier tool
+            # iterations was dropped from the stored assistant message
+            final_parts.append(response.text)
 
         messages.append(
             Message(role="assistant", content=response.text, tool_calls=response.tool_calls)
@@ -101,6 +128,12 @@ async def run_agent_turn(
             break
 
         for call in response.tool_calls:
+            if registry.is_project_scoped(call.name):
+                # pin the call to the active project: models hallucinate or ask
+                # for ids they were never given, and a web session must never
+                # touch another project anyway
+                call.arguments["project_id"] = str(turn.project_id)
+
             await emit("tool_call", {"tool_name": call.name, "arguments":call.arguments})
             record = ToolCallRecord(
                 session_id=agent_session_id, tool_name=call.name, arguments=call.arguments
@@ -119,7 +152,11 @@ async def run_agent_turn(
                 Message(role="tool", content=json.dumps(payload, default=str), tool_call_id=call.id)
             )
 
-    db.add(AgentMessage(session_id=agent_session_id, role="assistant", content=final_text))
+    db.add(
+        AgentMessage(
+            session_id=agent_session_id, role="assistant", content="\n\n".join(final_parts)
+        )
+    )
     session_row = await db.get(AgentSession, agent_session_id)
     if session_row is not None:
         session_row.updated_at = datetime.now(UTC)
@@ -142,7 +179,7 @@ async def _execute_call(
         # registry validates args and calls the core tool
         output = await registry.execute(call.name, call.arguments)  
     except ToolError as exc:
-        await _finish_record(db, record, "failed", None, f"{exc.code}: {exc.message}")
+        # fix: _finish_record was called twice back to back; removed the duplicate
         await _finish_record(db, record, "failed", None, f"{exc.code}: {exc.message}")
         await emit("tool_result", {"tool_name": call.name, "error": exc.code, "message": exc.message})
         log.warning("agent.tool.failed", tool=call.name, code=exc.code)

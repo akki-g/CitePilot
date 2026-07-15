@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "id": "https://openalex.org/W123",
+      "doi": "https://doi.org/10.1000/Test.DOI",
+      "display_name": "Graph Retrieval Augmented Generation",
+      "publication_year": 2024,
+      "cited_by_count": 42,
+      "authorships": [
+        { "author": { "id": "https://openalex.org/A1", "display_name": "Ada Lovelace" } }
+      ],
+      "primary_location": { "source": { "display_name": "Test Conference" } }
+    },
+    {
+      "id": "https://openalex.org/W456",
+      "doi": null,
+      "display_name": "Citation Networks for Retrieval",
+      "publication_year": 2023,
+      "cited_by_count": 17,
+      "authorships": [
+        { "author": { "id": "https://openalex.org/A2", "display_name": "Alan Turing" } }
+      ],
+      "primary_location": { "source": { "display_name": "Journal of Testing" } }
+    }
+  ]
+}

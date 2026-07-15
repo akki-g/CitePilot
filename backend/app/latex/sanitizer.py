@@ -24,7 +24,12 @@ def sanitize_project_path(path:str) -> str:
     # project files must be relative, never abs host paths
     if path.startswith("/"):
         raise UnsafePathError("absolute paths are not allowed")
-    
+
+    # fix: SAFE_PATH_RE was defined but never applied, so paths with spaces, `$`, `~`, etc.
+    # slipped through the sanitizer — reject unsupported characters before normalizing
+    if not SAFE_PATH_RE.match(path):
+        raise UnsafePathError("path contains unsupported characters")
+
     # parse as POSIX path cuz project paths are logical, not OS-native
     pure = PurePosixPath(path)
 

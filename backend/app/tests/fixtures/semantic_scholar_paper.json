@@ -1,0 +1,10 @@
+{
+  "paperId": "S2123",
+  "title": "Graph Retrieval Augmented Generation",
+  "abstract": "Graph retrieval uses citations",
+  "year": 2024,
+  "venue": "Test Conference",
+  "citationCount": 42,
+  "fieldsOfStudy": ["Computer Science"],
+  "tldr": { "text": "Uses citation graphs to improve retrieval." }
+}

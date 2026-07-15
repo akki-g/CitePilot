@@ -20,7 +20,7 @@ class OpenAlexClient:
         # open alex asks clients to identify themselves for the polite pool
 
         if not settings.OPENALEX_MAILTO:
-            raise OpenAlexError("OPENALX_MAILTO is required for the OpenAlex polite pool")
+            raise OpenAlexError("OPENALEX_MAILTO is required for the OpenAlex polite pool")
         
         self.mailto = settings.OPENALEX_MAILTO
         self.redis = redis
@@ -79,8 +79,9 @@ class OpenAlexClient:
 
         return resp.json()
     
+    # fix: was named `_cached_key` but _cached_get calls self._cache_key — AttributeError on every request
     @staticmethod
-    def _cached_key(path: str, params: dict[str, Any]) -> str:
+    def _cache_key(path: str, params: dict[str, Any]) -> str:
         # sort keys so equivalent parameter dicts produce the same cache key
         payload = json.dumps({"path":path,"params":params}, sort_keys=True)
 

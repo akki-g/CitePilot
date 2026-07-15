@@ -1,0 +1,7 @@
+@article{Lewis_2020,
+  title = {Retrieval-Augmented Generation for Knowledge-Intensive {NLP} Tasks},
+  author = {Lewis, Patrick and Perez, Ethan and Piktus, Aleksandra},
+  journal = {Advances in Neural Information Processing Systems},
+  year = {2020},
+  doi = {10.1000/test.doi}
+}

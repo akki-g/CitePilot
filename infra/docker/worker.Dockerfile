@@ -13,10 +13,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Install Tectonic (official installer drops the binary in cwd).
-RUN cd /tmp \
- && curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | sh \
- && mv /tmp/tectonic /usr/local/bin/tectonic
+# Install Tectonic. The official drop installer 404s on arm64 (it requests a
+# *-gnu build that has no release asset), so fetch the static musl binary for
+# the current architecture directly from GitHub releases.
+RUN arch="$(uname -m)" \
+ && curl --proto '=https' --tlsv1.2 -fsSL \
+    "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/tectonic-0.16.9-${arch}-unknown-linux-musl.tar.gz" \
+    | tar -xz -C /usr/local/bin tectonic
 
 # Pre-warm the bundle with the same preamble as the bootstrap main.tex.
 RUN printf '\\documentclass{article}\\usepackage{hyperref}\\usepackage{cite}\\begin{document}warmup\\bibliographystyle{plain}\\end{document}\n' > /tmp/warmup.tex \

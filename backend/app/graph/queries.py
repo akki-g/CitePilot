@@ -7,7 +7,9 @@
 # co-citation (citing)-[:CITES]->(seed) : papers the community treates as companions of the seed
 
 from dataclasses import dataclass, field
+
 from neo4j import AsyncDriver
+
 
 @dataclass(frozen=True)
 class GraphCandidate:
@@ -79,56 +81,79 @@ ORDER BY citing.cited_by_count DESC
 LIMIT $limit
 """
 
-# two-hop neighborhood for the graph paned, capped per direction. the CASE/UNWIND
-# trick keeps the row alive when a paper has no neighbors at all.
+# Focused neighborhood for the graph panel. Fetch each direction with its own
+# budget and return only the seed relationships the UI needs. The previous
+# query expanded an undirected relationship from every selected neighbor and
+# then filtered the result, doing avoidable work on highly cited papers.
 _TWO_HOP_NEIGHBORHOOD = """
 MATCH (seed:Paper {id: $paper_id})
 CALL {
   WITH seed
-  MATCH (seed)-[:CITES]->(n1:Paper)
-  RETURN n1 ORDER BY n1.cited_by_count DESC LIMIT $per_hop
-  UNION
-  WITH seed
-  MATCH (n1:Paper)-[:CITES]->(seed)
-  RETURN n1 ORDER BY n1.cited_by_count DESC LIMIT $per_hop
+  OPTIONAL MATCH (seed)-[:CITES]->(reference:Paper)
+  WITH reference ORDER BY reference.cited_by_count DESC
+  LIMIT $per_hop
+  RETURN [node IN collect(reference) WHERE node IS NOT NULL] AS references
 }
-WITH seed, collect(DISTINCT n1) AS hop1s
-UNWIND (CASE WHEN size(hop1s) = 0 THEN [null] ELSE hop1s END) AS h
-OPTIONAL MATCH (h)-[r:CITES]-(m:Paper)
-WHERE m = seed OR m IN hop1s
-WITH seed, hop1s,
-     [rel IN collect(DISTINCT r) WHERE rel IS NOT NULL |
-       {source: startNode(rel).id, target: endNode(rel).id}] AS edges
-RETURN seed, hop1s, edges
+CALL {
+  WITH seed
+  OPTIONAL MATCH (citer:Paper)-[:CITES]->(seed)
+  WITH citer ORDER BY citer.cited_by_count DESC
+  LIMIT $per_hop
+  RETURN [node IN collect(citer) WHERE node IS NOT NULL] AS citers
+}
+RETURN seed, references, citers
 """
 
 async def direct_neighbors(
-        driver: AsyncDriver, paper_ids: list[str], limit: int = 20
+    driver: AsyncDriver, paper_ids: list[str], limit: int = 20
 ) -> list[GraphCandidate]:
     """one undirected hop from the seeds, single hop undirected is safe
     only variable len undirected expansion is a trap"""
 
     if not paper_ids:
         return []
-    
-    records, _, _ = await driver.execute_query(_DIRECT_NEIGHBORS, paper_ids=paper_ids, limit=limit)
+    records, _, _ = await driver.execute_query(
+        _DIRECT_NEIGHBORS, paper_ids=paper_ids, limit=limit
+    )
 
     return [
         GraphCandidate(
             paper_id=r["paper_id"],
             score=float(r["seed_links"]),
             signal="citation_neighbors",
-            features={"seed_links": r["seed_links"], "min_graph_distance": 1}
+            features={"seed_links": r["seed_links"], "min_graph_distance": 1},
         )
         for r in records
     ]
 
-async def co_citation(
-        driver: AsyncDriver, paper_ids: list[str], limit: int = 20
+
+# fix: this function was missing — the Cypher constant existed but retrieval/graph_search.py
+# and agent/tools.py call queries.bibliographic_coupling, which raised AttributeError
+async def bibliographic_coupling(
+    driver: AsyncDriver, paper_ids: list[str], limit: int = 20
 ) -> list[GraphCandidate]:
     if not paper_ids:
         return []
-    
+
+    records, _, _ = await driver.execute_query(
+        _BIBLIOGRAPHIC_COUPLING, paper_ids=paper_ids, limit=limit
+    )
+    return [
+        GraphCandidate(
+            paper_id=r["paper_id"],
+            score=float(r["shared_references"]),
+            signal="coupling",
+            features={"shared_reference_count": r["shared_references"]},
+        )
+        for r in records
+    ]
+
+
+async def co_citation(
+    driver: AsyncDriver, paper_ids: list[str], limit: int = 20
+) -> list[GraphCandidate]:
+    if not paper_ids:
+        return []
     records, _, _ = await driver.execute_query(_CO_CITATION, paper_ids=paper_ids, limit=limit)
     return [
         GraphCandidate(
@@ -189,7 +214,7 @@ async def citers_of(driver: AsyncDriver, paper_id: str, limit: int = 20) -> list
     ]
 
 
-def _node_dict(node, is_seed: bool = False) -> dict:
+def _node_dict(node, is_seed: bool = False, role: str | None = None) -> dict:
     return {
         "id": node["id"],
         "title": node.get("title"),
@@ -197,6 +222,7 @@ def _node_dict(node, is_seed: bool = False) -> dict:
         "cited_by_count": node.get("cited_by_count") or 0,
         "is_stub": bool(node.get("is_stub")),
         "is_seed": is_seed,
+        "role": role or ("seed" if is_seed else "related"),
     }
 
 
@@ -209,20 +235,42 @@ async def two_hop_neighborhood(driver: AsyncDriver, paper_id: str, per_hop: int 
     )
 
     if not records:
-        return {"nodes":[], "edges": []}
-    
+        return {
+            "nodes": [],
+            "edges": [],
+            "stats": {"total_neighbors": 0, "visible_neighbors": 0, "hidden_stubs": 0},
+        }
+
     record = records[0]
-    nodes = [_node_dict(record["seed"], is_seed=True)]
-    nodes += [_node_dict(n) for n in record["hop1s"]]
+    seed_id = record["seed"]["id"]
+    references = list(record["references"])
+    citers = list(record["citers"])
 
-    seen: set[tuple[str, str]] = set()
-    edges: list[dict] = []
-    for edge in record["edges"]:
-        key = (edge["source"], edge["target"])
-        if key in seen:
-            continue
-        seen.add(key)
-        edges.append({"source": edge["source"], "target": edge["target"], "type":"CITES"})
+    related: dict[str, dict] = {}
+    for node in references:
+        related[node["id"]] = _node_dict(node, role="reference")
+    for node in citers:
+        node_id = node["id"]
+        role = "both" if node_id in related else "citer"
+        related[node_id] = _node_dict(node, role=role)
 
-    return {"nodes": nodes, "edges": edges}
+    edges = [
+        {"source": seed_id, "target": node["id"], "type": "CITES"}
+        for node in references
+    ]
+    edges += [
+        {"source": node["id"], "target": seed_id, "type": "CITES"}
+        for node in citers
+    ]
 
+    nodes = [_node_dict(record["seed"], is_seed=True), *related.values()]
+    hidden_stubs = sum(1 for node in related.values() if node["is_stub"] or not node["title"])
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "total_neighbors": len(related),
+            "visible_neighbors": len(related) - hidden_stubs,
+            "hidden_stubs": hidden_stubs,
+        },
+    }

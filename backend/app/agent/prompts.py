@@ -10,10 +10,13 @@ Rules:
 - If retrieved evidence is weak or empty, say so plainly.
 - When editing LaTeX, preserve the user's style; change only what was asked.
 - Prefer concise responses.
+- Tool calls are automatically scoped to the active project. Use the project id
+  given in context; never ask the user for a project or file id.
 """
 
 
 def build_user_context(
+    project_id: str,
     project_name: str,
     active_file_path: str | None,
     selected_text: str | None,
@@ -21,6 +24,7 @@ def build_user_context(
 ) -> str:
     # Wrap runtime context and the user's actual request into one user message.
     return f"""Project: {project_name}
+Project ID: {project_id}
 Active file: {active_file_path or "unknown"}
 
 Selected text:

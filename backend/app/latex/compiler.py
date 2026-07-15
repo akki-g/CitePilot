@@ -116,7 +116,8 @@ async def compile_project(
         shutil.copyfile(pdf_path, artifact_path)
 
         compilation.logs = logs
-        compilation.status = "compiled"
+        # fix: status was "compiled" — the rest of the system (routes, UI polling) expects "completed"
+        compilation.status = "completed"
         compilation.pdf_path = str(artifact_path)
         compilation.completed_at = datetime.now(UTC)
 

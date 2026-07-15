@@ -35,9 +35,11 @@ async def find_existing_paper(session: AsyncSession, np: NormalizedPaper) -> Pap
     # best match: doi becaude its cross provider and normalized
 
     if np.doi:
+        # fix: was missing .scalar_one_or_none() — a Result object is always truthy, so every
+        # DOI-bearing import returned the Result instead of a Paper/None and broke dedup
         paper = (
             await session.execute(select(Paper).where(Paper.doi == np.doi))
-        )
+        ).scalar_one_or_none()
         if paper:
             return paper
     

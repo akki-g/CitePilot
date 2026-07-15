@@ -1,10 +1,12 @@
 from __future__ import annotations
+
+import httpx
 from arq.connections import ArqRedis
 
 from neo4j import AsyncDriver
 from redis.asyncio import Redis
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import schemas as s
@@ -27,11 +29,11 @@ from app.ingestion.bibtex import BibtexPaper, generate_fallback_bibtex, rekey_bi
 from app.ingestion.crossref import CrossrefClient
 from app.ingestion.normalize import normalize_openalex_work
 from app.ingestion.openalex import OpenAlexClient
-from app.ingestion.upsert import find_existing_paper, link_project_paper
+from app.ingestion.upsert import link_project_paper
 from app.latex.patcher import PATCH_ADAPTER, PatchError, apply_patch
 from app.latex.sanitizer import UnsafePathError, sanitize_project_path
 from app.logging import get_logger
-from app.retrieval.embeddings import create_embedding_client
+from app.retrieval.embeddings import EmbeddingRateLimitError, create_embedding_client
 from app.retrieval.explain import RetrievalFeatures, render_reason
 from app.retrieval.graph_search import GraphSearch
 from app.retrieval.hybrid import HybridRetriever
@@ -62,7 +64,9 @@ class ToolContext:
 
 
 async def _require_project(ctx: ToolContext, project_id) -> Project:
-    project = await ctx.session.execute.get(Project, project_id)    
+    # fix: was `ctx.session.execute.get(...)` — .get is a method on the session itself,
+    # not on execute; the old form raised AttributeError on every project-scoped tool
+    project = await ctx.session.get(Project, project_id)
     if project is None:
         raise ToolError("not_found", f"Project {project_id} does not exist")
     return project
@@ -101,6 +105,19 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
         papers = (await ctx.session.execute(stmt)).scalars().all()
 
         names = await _author_names(ctx, [p.id for p in papers])
+        project_paper_ids: set = set()
+        if args.project_id and papers:
+            project_paper_ids = {
+                row[0]
+                for row in (
+                    await ctx.session.execute(
+                        select(ProjectPaper.paper_id).where(
+                            ProjectPaper.project_id == args.project_id,
+                            ProjectPaper.paper_id.in_([paper.id for paper in papers]),
+                        )
+                    )
+                ).all()
+            }
         for p in papers:
             results.append(
                 s.PaperSearchResult(
@@ -111,7 +128,7 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
                     authors=names.get(p.id, [])[:5],
                     abstract=(p.abstract or "")[:500] or None,
                     cited_by_count=p.cited_by_count or 0,
-                    imported=not p.is_stub,
+                    imported=p.id in project_paper_ids if args.project_id else not p.is_stub,
                 )
             )
     else:
@@ -121,13 +138,40 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
             data = await client.search_works(args.query, limit=args.limit)
         finally:
             await client.aclose()
-        for work in data.get("results", []):
-            np = normalize_openalex_work(work)
+        normalized = [normalize_openalex_work(work) for work in data.get("results", [])]
+        source_ids = [paper.source_id for paper in normalized]
+        dois = [paper.doi for paper in normalized if paper.doi]
+        existing_rows = []
+        if source_ids or dois:
+            conditions = [Paper.openalex_id.in_(source_ids)]
+            if dois:
+                conditions.append(Paper.doi.in_(dois))
+            existing_rows = (
+                await ctx.session.execute(select(Paper).where(or_(*conditions)))
+            ).scalars().all()
+        by_openalex = {paper.openalex_id: paper for paper in existing_rows if paper.openalex_id}
+        by_doi = {paper.doi: paper for paper in existing_rows if paper.doi}
+
+        project_paper_ids: set = set()
+        if args.project_id and existing_rows:
+            project_paper_ids = {
+                row[0]
+                for row in (
+                    await ctx.session.execute(
+                        select(ProjectPaper.paper_id).where(
+                            ProjectPaper.project_id == args.project_id,
+                            ProjectPaper.paper_id.in_([paper.id for paper in existing_rows]),
+                        )
+                    )
+                ).all()
+            }
+
+        for np in normalized:
             if args.year_min and np.publication_year and np.publication_year < args.year_min:
                 continue
             if args.year_max and np.publication_year and np.publication_year > args.year_max:
                 continue
-            existing = await find_existing_paper(ctx.session, np)
+            existing = by_openalex.get(np.source_id) or (by_doi.get(np.doi) if np.doi else None)
             results.append(
                 s.PaperSearchResult(
                     paper_id=existing.id if existing else None,
@@ -137,7 +181,11 @@ async def search_papers(ctx: ToolContext, args: s.SearchPapersInput) -> s.Search
                     authors=[a.name for a in np.authors][:5],
                     abstract=(np.abstract or "")[:500] or None,
                     cited_by_count=np.cited_by_count or 0,
-                    imported=bool(existing and not existing.is_stub),
+                    imported=(
+                        existing.id in project_paper_ids
+                        if args.project_id and existing
+                        else bool(existing and not existing.is_stub) if not args.project_id else False
+                    ),
                 )
             )
 
@@ -265,7 +313,9 @@ async def retrieve_evidence(
 ) -> s.RetrieveEvidenceOutput:
     # This is the tool surface over the HybridRetriever from guide 04.
     await _require_project(ctx, args.project_id)
-    embeddings = create_embedding_client(ctx.settings)
+    # redis-backed cache: repeat embeds of the same paragraph within a tool
+    # loop stay off the provider's rate limit
+    embeddings = create_embedding_client(ctx.settings, redis=ctx.redis)
     try:
         retriever = HybridRetriever(
             embeddings=embeddings,
@@ -278,6 +328,15 @@ async def retrieve_evidence(
             query=args.query,
             seed_paper_ids=args.seed_paper_ids,
             limit=args.limit,
+        )
+    except EmbeddingRateLimitError as exc:
+        # surface throttling as a tool error the model can relay, instead of
+        # an unhandled exception that kills the whole SSE stream
+        raise ToolError("rate_limited", str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise ToolError(
+            "embedding_failed",
+            f"embedding provider error ({exc.response.status_code}); retrieval is unavailable right now",
         )
     finally:
         aclose = getattr(embeddings, "aclose", None)

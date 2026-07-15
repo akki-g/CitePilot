@@ -26,7 +26,8 @@ async def sync_paper(session: AsyncSession, driver: AsyncDriver, paper_id: UUID)
         await session.execute(
             select(Author, PaperAuthor.author_order)
             .join(PaperAuthor, PaperAuthor.author_id == Author.id)
-            .where(PaperAuthor.paper_id == paper)
+            # fix: compared against the Paper ORM object (`== paper`) instead of the UUID
+            .where(PaperAuthor.paper_id == paper_id)
         )
     ).all()
 
@@ -38,69 +39,69 @@ async def sync_paper(session: AsyncSession, driver: AsyncDriver, paper_id: UUID)
         )
     ).all()
 
-    async with driver.sessoin() as graph:
+    author_payload = [
+        {
+            "id": str(author.id),
+            "openalex_id": author.openalex_id,
+            "name": author.name,
+            "author_order": author_order,
+        }
+        for author, author_order in authors
+    ]
+    concept_payload = [
+        {
+            "id": str(concept.id),
+            "name": concept.name,
+            "score": score,
+            "source": source,
+        }
+        for concept, score, source in concepts
+    ]
+
+    # Mirror a paper and all of its small relationship collections in one
+    # Bolt round trip. Imports used to issue one query per author and concept,
+    # which made graph sync grow linearly with metadata richness.
+    async with driver.session() as graph:
         await graph.run(
             """
-            MERGE (p:Paper {id" $id})
+            MERGE (p:Paper {id: $id})
             SET p.openalex_id = $openalex_id,
                 p.doi = $doi,
                 p.title = $title,
                 p.year = $year,
                 p.cited_by_count = $cited_by_count,
                 p.is_stub = $is_stub
+            FOREACH (row IN $authors |
+                MERGE (a:Author {id: row.id})
+                SET a.openalex_id = row.openalex_id,
+                    a.name = row.name
+                MERGE (p)-[r:WRITTEN_BY]->(a)
+                SET r.author_order = row.author_order
+            )
+            FOREACH (venue IN CASE WHEN $venue_name IS NULL THEN [] ELSE [$venue_name] END |
+                MERGE (v:Venue {name: venue})
+                MERGE (p)-[:PUBLISHED_IN]->(v)
+            )
+            FOREACH (row IN $concepts |
+                MERGE (c:Concept {name: row.name})
+                SET c.id = row.id
+                MERGE (p)-[r:MENTIONS_CONCEPT]->(c)
+                SET r.score = row.score,
+                    r.source = row.source
+            )
             """,
             id=str(paper.id),
             openalex_id=paper.openalex_id,
             doi=paper.doi,
             title=paper.title,
             year=paper.publication_year,
+            # fix: cited_by_count kwarg was missing but the query references $cited_by_count
+            cited_by_count=paper.cited_by_count,
             is_stub=paper.is_stub,
+            authors=author_payload,
+            venue_name=paper.venue_name,
+            concepts=concept_payload,
         )
-
-        for author, author_order in authors:
-            await graph.run(
-                """
-                MATCH (p:Paper {id: $paper_id})
-                MERGE (a:Author {id: $author_id})
-                SET a.openalex_id = $openalex_id,
-                    a.name = $name
-                MERGE (p)-[r:WRITTEN_BY]->(a)
-                SET r.author_order = $author_order
-                """,
-                paper_id=str(paper.id),
-                author_id=str(author.id),
-                openalex_id=author.openalex_id,
-                name=author.name,
-                author_order=author_order,
-            )
-
-        if paper.venue_name:
-            await graph.run(
-                """
-                MATCH (p:Paper {id: $paper_id})
-                MERGE (v:Venue {name: $venue_name})
-                MERGE (p)-[:PUBLISHED_IN]->(v)
-                """,
-                paper_id=str(paper.id),
-                venue_name=paper.venue_name,
-            )
-
-        for concept, score, source in concepts:
-            await graph.run(
-                """
-                MATCH (p:Paper {id: $paper_id})
-                MERGE (c:Concept {name: $name})
-                SET c.id = $concept_id
-                MERGE (p)-[r:MENTIONS_CONCEPT]->(c)
-                SET r.score = $score,
-                    r.source = $source
-                """,
-                paper_id=str(paper.id),
-                concept_id=str(concept.id),
-                name=concept.name,
-                score=score,
-                source=source,
-            )
 
     log.info("graph.sync.paper_completed", paper_id=str(paper_id))
 

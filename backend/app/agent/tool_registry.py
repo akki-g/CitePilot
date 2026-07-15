@@ -35,6 +35,13 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._tools)
+
+    def is_project_scoped(self, name: str) -> bool:
+        # true when the tool's input model takes a project_id, so the
+        # orchestrator can pin it to the active project instead of trusting
+        # a model-provided (possibly hallucinated) id
+        definition = self._tools.get(name)
+        return definition is not None and "project_id" in definition.input_model.model_fields
     
     def specs(self) -> list[ToolSpec]:
         return [

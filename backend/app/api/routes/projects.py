@@ -59,13 +59,16 @@ async def list_projects(session: AsyncSession = Depends(get_db)) -> list[dict]:
         {
             "id": str(p.id),
             "name": p.name,
+            # fix: description was missing from the list response the frontend renders
+            "description": p.description,
             "created_at": p.created_at.isoformat(),
             "updated_at": p.updated_at.isoformat(),
         }
         for p in projects
     ]
 
-@router.post("")
+# fix: was a plain @router.post("") — creation should return 201, not 200
+@router.post("", status_code=201)
 async def create_project(
     body: ProjectCreate,
     session: AsyncSession = Depends(get_db),
@@ -78,7 +81,8 @@ async def create_project(
     session.add_all(
         [
             ProjectFile(project_id=project.id, path="main.tex", content=DEFAULT_MAIN_TEX, version=1),
-            ProjectFile(project_if=id, path="references.bib", content="", version=1),
+            # fix: was `project_if=id` — typo'd kwarg plus the `id` builtin; TypeError on every project create
+            ProjectFile(project_id=project.id, path="references.bib", content="", version=1),
         ]
     )
 
