@@ -38,6 +38,11 @@ previous_sha="$(git rev-parse HEAD)"
 export CITEPILOT_IMAGE_TAG="$release_sha"
 compose=(docker compose --env-file .env.production -f compose.production.yml)
 
+# The portfolio edge proxy and CitePilot web gateway communicate only through
+# this shared network. Creating it is idempotent and safe on every deployment.
+docker network inspect portfolio-edge >/dev/null 2>&1 \
+  || docker network create portfolio-edge >/dev/null
+
 rollback() {
   local exit_code=$?
   trap - ERR
@@ -69,17 +74,12 @@ git checkout --detach "$release_sha"
 "${compose[@]}" run --rm --no-deps backend alembic upgrade head
 "${compose[@]}" up -d --remove-orphans
 
-published="$("${compose[@]}" port web 8080 | tail -1)"
-if [[ -z "$published" ]]; then
-  echo "deploy: web port was not published" >&2
-  false
-fi
-health_url="http://${published}/api/health"
+health_url="http://127.0.0.1:8080/api/health"
 
 echo "deploy: waiting for $health_url"
 healthy=false
 for _ in $(seq 1 30); do
-  if response="$(curl --fail --silent --show-error --max-time 8 "$health_url")" \
+  if response="$("${compose[@]}" exec -T web wget -qO- "$health_url")" \
     && grep -q '"status":"ok"' <<<"$response"; then
     healthy=true
     break

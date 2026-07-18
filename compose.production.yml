@@ -113,15 +113,17 @@ services:
     restart: unless-stopped
     depends_on:
       backend: { condition: service_healthy }
-    ports:
-      - "${CITEPILOT_BIND_ADDRESS:-127.0.0.1}:${CITEPILOT_WEB_PORT:-3001}:8080"
+    expose: ["8080"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 15s
       timeout: 5s
       retries: 8
     logging: *default-logging
-    networks: [app]
+    networks:
+      app:
+      portfolio_edge:
+        aliases: [citepilot-web]
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -134,6 +136,9 @@ networks:
   app:
   data:
     internal: true
+  portfolio_edge:
+    name: portfolio-edge
+    external: true
 
 volumes:
   postgres_data:

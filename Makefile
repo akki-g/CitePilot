@@ -1,3 +1,6 @@
+.PHONY: up down logs backend-shell web-shell migrate test-backend resync-graph \
+	edge-network prod-config prod-up prod-down prod-logs prod-backup
+
 up:
 	docker compose up --build
 
@@ -25,7 +28,10 @@ resync-graph:
 prod-config:
 	docker compose --env-file .env.production -f compose.production.yml config --quiet
 
-prod-up:
+edge-network:
+	@docker network inspect portfolio-edge >/dev/null 2>&1 || docker network create portfolio-edge
+
+prod-up: edge-network
 	docker compose --env-file .env.production -f compose.production.yml up -d --build
 
 prod-down:

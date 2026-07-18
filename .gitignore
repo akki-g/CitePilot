@@ -1,36 +1,121 @@
-# Secrets
+# Environment files and secrets
 .env
-.env.production
-.env.production.local
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+!.env*.example
+!**/.env*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+.aws/
+.envrc
+.direnv/
+
+# Deployment state, backups, and local data
 .deployed-sha
+.deploy.lock
 backups/
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+*.dump
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+citenv/
+.python-version
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 *.egg-info/
+pip-wheel-metadata/
+build/
 
-# Node / Vite
+# Node, pnpm, and Vite
 node_modules/
 dist/
 out/
+.vite/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+*.tsbuildinfo
+.eslintcache
 
-# OS / editor
-.DS_Store
-.vscode/
+# Tests, browser automation, and generated output
+coverage/
+/output/**/*.png
+/output/**/*.har
+playwright-report/
+test-results/
+*.har
+
+# LaTeX compilation artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+
+# Logs, caches, and temporary files
+logs/
+*.log
+*.pid
+*.pid.lock
+*.sock
+.cache/
+tmp/
+*.bak
+*.tmp
+
+# Docker local overrides
+docker-compose.override.yml
+compose.override.yml
+
+# Local AI tooling
+.claude/
+.codex/
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
 .idea/
+.fleet/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
 
-#venv
-citenv/
-
-guides/
-
-*.md
-!README.md
-!infra/**/*.md
-
-*.png
-
+# Operating system files
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini

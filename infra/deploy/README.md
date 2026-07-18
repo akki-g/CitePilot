@@ -1,9 +1,9 @@
 # CitePilot on an existing EC2 website
 
-This deployment keeps CitePilot isolated behind the web server already serving your personal site.
-The recommended public address is a first-party subdomain such as
-`https://citepilot.example.com`. Only the container web gateway binds to the host, on
-`127.0.0.1:3001`; FastAPI, Postgres, Neo4j, and Redis remain private Docker services.
+This deployment keeps CitePilot isolated behind the containerized nginx proxy serving the personal
+site. CitePilot uses `https://citepilot.its-akki.com`. Its web gateway joins the shared external
+`portfolio-edge` Docker network as `citepilot-web`; it does not bind a host port. FastAPI, Postgres,
+Neo4j, and Redis remain private Docker services.
 
 The CI/CD path uses GitHub OpenID Connect to obtain short-lived AWS credentials, then AWS Systems
 Manager Run Command to deploy an exact commit. It does not store an AWS access key or EC2 SSH key
@@ -53,7 +53,7 @@ Use the same Postgres and Redis passwords inside their corresponding connection 
 In Google Cloud, register:
 
 ```text
-https://citepilot.example.com/api/auth/oauth/google/callback
+https://citepilot.its-akki.com/api/auth/oauth/google/callback
 ```
 
 Set both `FRONTEND_URL` and `BACKEND_URL` to the public CitePilot origin. For verification email,
@@ -61,11 +61,16 @@ the recommended configuration is a Resend API key plus a sender on a verified su
 
 ## 3. Connect the personal website
 
-Choose the proxy you already run:
+The personal-portfolio repository owns ports 80 and 443 and contains the CitePilot server block.
+Both deployment paths create `portfolio-edge` if needed. Start the portfolio proxy, then deploy
+CitePilot. Docker DNS makes `citepilot-web:8080` reachable from the proxy without exposing it on the
+host.
 
-- Nginx: copy `infra/deploy/nginx-citepilot.conf`, replace the hostname, enable it, validate with
-  `sudo nginx -t`, and let the existing Certbot/TLS setup issue the certificate.
-- Caddy: merge `infra/deploy/Caddyfile.example` into the existing Caddyfile and reload Caddy.
+Point `citepilot.its-akki.com` at the instance and include it in the portfolio's Let's Encrypt
+certificate. Set both `FRONTEND_URL` and `BACKEND_URL` in `.env.production` to that HTTPS origin.
+The legacy `nginx-citepilot.conf` and `Caddyfile.example` are only references for installations
+whose edge proxy runs directly on the host; they require restoring a loopback-only `web` port
+mapping in a Compose override.
 
 Do not publish ports 5432, 6379, 7474, 7687, or 8000 in the EC2 security group. The production
 Compose file does not bind them to the host.
@@ -111,7 +116,7 @@ add these environment variables:
 | `EC2_INSTANCE_ID` | `i-0123456789abcdef0` |
 | `EC2_APP_DIR` | `/opt/citepilot` |
 | `EC2_DEPLOY_USER` | `ubuntu` |
-| `CITEPILOT_URL` | `https://citepilot.example.com` |
+| `CITEPILOT_URL` | `https://citepilot.its-akki.com` |
 
 No long-lived AWS credential or SSH key belongs in GitHub secrets. The IAM trust policy only accepts
 tokens from `akki-g/CitePilot` using the `production` environment.
