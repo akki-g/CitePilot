@@ -35,7 +35,7 @@ type DemoProject = {
   papers: DemoPaper[];
 };
 
-const bibliography = `@article{edge2024graphrag,
+const graphragBibliography = `@article{edge2024graphrag,
   title={From Local to Global: A GraphRAG Approach},
   author={Edge, Darren and others},
   year={2024}
@@ -78,20 +78,264 @@ Graph-grounded retrieval can reveal shared foundations that keyword search misse
 \\end{document}
 `,
     },
-    { path: "references.bib", content: bibliography },
+    { path: "references.bib", content: graphragBibliography },
   ];
 }
 
-const papers: DemoPaper[] = [
+const graphragPapers: DemoPaper[] = [
   { key: "lewis2020rag", title: "Retrieval-Augmented Generation", year: 2020, role: "foundation" },
   { key: "gao2023retrieval", title: "RAG for Large Language Models: A Survey", year: 2023, role: "survey" },
   { key: "edge2024graphrag", title: "From Local to Global: A GraphRAG Approach", year: 2024, role: "project" },
 ];
 
+const agentsBibliography = `@article{yao2023react,
+  title={ReAct: Synergizing Reasoning and Acting in Language Models},
+  author={Yao, Shunyu and others},
+  year={2023}
+}
+
+@article{schick2023toolformer,
+  title={Toolformer: Language Models Can Teach Themselves to Use Tools},
+  author={Schick, Timo and others},
+  year={2023}
+}
+
+@article{wang2024agentsurvey,
+  title={A Survey on Large Language Model Based Autonomous Agents},
+  author={Wang, Lei and others},
+  year={2024}
+}`;
+
+const climateBibliography = `@article{ipcc2023,
+  title={Climate Change 2023: Synthesis Report},
+  author={{Intergovernmental Panel on Climate Change}},
+  year={2023}
+}
+
+@article{reichstein2019deep,
+  title={Deep Learning and Process Understanding for Data-Driven Earth System Science},
+  author={Reichstein, Markus and others},
+  year={2019}
+}
+
+@article{rolnick2022climate,
+  title={Tackling Climate Change with Machine Learning},
+  author={Rolnick, David and others},
+  year={2022}
+}`;
+
+const agentPapers: DemoPaper[] = [
+  { key: "yao2023react", title: "ReAct: Synergizing Reasoning and Acting", year: 2023, role: "foundation" },
+  { key: "schick2023toolformer", title: "Toolformer", year: 2023, role: "tool use" },
+  { key: "wang2024agentsurvey", title: "A Survey on LLM-Based Autonomous Agents", year: 2024, role: "survey" },
+];
+
+const climatePapers: DemoPaper[] = [
+  { key: "ipcc2023", title: "Climate Change 2023: Synthesis Report", year: 2023, role: "foundation" },
+  { key: "reichstein2019deep", title: "Deep Learning for Earth System Science", year: 2019, role: "method" },
+  { key: "rolnick2022climate", title: "Tackling Climate Change with Machine Learning", year: 2022, role: "survey" },
+];
+
+function seededFiles(main: string, references: string): DemoSourceFile[] {
+  return [
+    { path: "main.tex", content: main },
+    { path: "references.bib", content: references },
+  ];
+}
+
+const graphragDraft = `\\documentclass{article}
+\\usepackage{hyperref}
+\\usepackage{cite}
+\\title{GraphRAG Beyond the Vector Index: A Working Survey}
+\\author{CitePilot Demo}
+\\date{}
+
+\\begin{document}
+\\maketitle
+
+\\begin{abstract}
+Retrieval-augmented generation grounds model outputs in external evidence, but conventional vector
+retrieval often treats documents as independent fragments. This working survey examines graph-based
+retrieval as a way to preserve relationships among entities, claims, and sources. We compare local
+neighborhood retrieval, global community summaries, and hybrid graph-vector pipelines.
+\\end{abstract}
+
+\\section{Introduction}
+Retrieval-augmented generation (RAG) separates factual storage from model parameters by retrieving
+evidence at inference time \\cite{lewis2020rag}. The pattern improves provenance and makes knowledge
+easier to update, yet chunk-level vector search is weaker when an answer requires connecting facts
+distributed across documents.
+
+GraphRAG systems add explicit structure. Documents become entities, relationships, claims, or
+communities, and retrieval can follow those connections instead of ranking each chunk independently
+\\cite{edge2024graphrag}. This survey asks when that structure produces better evidence and when it
+merely adds indexing cost.
+
+\\section{Retrieval Families}
+\\subsection{Vector-first retrieval}
+Dense retrievers embed questions and passages into a shared space. They remain a strong production
+baseline, especially when paired with query rewriting and reranking \\cite{gao2023retrieval}.
+
+\\subsection{Local graph retrieval}
+Local approaches match an entity or passage and expand through a bounded neighborhood. Adjacent
+claims, citations, and aliases can expose evidence that would not rank highly in vector space.
+
+\\subsection{Global graph retrieval}
+Global questions ask for themes or disagreements across a collection. Community summaries provide a
+hierarchical view of the corpus, trading a larger indexing phase for broader evidence coverage.
+
+\\section{Evaluation}
+A fair comparison should hold the generator constant and vary only retrieval. We propose measuring
+answer correctness, citation precision, evidence coverage, latency, and index construction cost.
+Multi-hop questions should be reported separately because aggregate scores can hide the cases where
+graph structure is most valuable.
+
+\\section{Discussion}
+Graph retrieval is unlikely to replace vector search universally. Hybrid systems are more plausible:
+vector search provides a high-recall entry point while graph expansion supplies connected context.
+Open problems include graph freshness, uncertainty in extracted edges, and benchmarks with
+claim-level provenance.
+
+\\section{Conclusion}
+GraphRAG is best understood as a family of retrieval designs. Its promise is relational evidence:
+not only finding relevant text, but preserving why pieces of evidence belong together.
+
+\\bibliographystyle{plain}
+\\bibliography{references}
+\\end{document}
+`;
+
+const agentsHalfDraft = `\\documentclass{article}
+\\usepackage{hyperref}
+\\usepackage{cite}
+\\title{Reliable Tool-Using Agents Under Partial Failure}
+\\author{CitePilot Demo}
+\\date{}
+
+\\begin{document}
+\\maketitle
+
+\\begin{abstract}
+Tool-using language model agents can search, calculate, and modify external state, but each capability
+introduces a new failure boundary. This half-written paper develops a reliability model for agents
+that must act under incomplete observations and intermittent tool errors.
+\\end{abstract}
+
+\\section{Introduction}
+Agent systems interleave model reasoning with actions. ReAct combined reasoning traces and actions in
+one loop \\cite{yao2023react}, while Toolformer studied how models learn when API calls are useful
+\\cite{schick2023toolformer}. Deployment also requires predictable behavior when a tool times out,
+returns malformed data, or succeeds after the agent has already changed its plan.
+
+We focus on the orchestration layer. The question is not whether a model can select a tool once, but
+whether the system preserves intent across retries, partial results, and human review.
+
+\\section{Related Work}
+Agent surveys commonly separate planning, memory, tool use, and action modules
+\\cite{wang2024agentsurvey}. Failures cross those boundaries: a stale observation can corrupt a plan,
+and an ambiguous response can be stored as a fact.
+
+\\section{System Model}
+We represent a turn as the user goal, adopted observations, pending tool calls, and a monotonic action
+log. Tool results are successful, retryable, terminal, or ambiguous. Ambiguous outcomes require
+inspection before another state-changing call is allowed.
+
+% TODO: Add the state transition figure and define the recovery budget formally.
+
+\\section{Failure Taxonomy}
+\\subsection{Observation failures}
+Missing fields and stale reads should be treated as evidence-quality problems.
+
+\\subsection{Action failures}
+Timeouts are difficult because the caller may not know whether an action took effect. Idempotency
+keys and post-action inspection reduce duplicate writes.
+
+\\subsection{Planning failures}
+% TODO: Compare plan repair with full replanning and add two benchmark traces.
+
+\\section{Evaluation Plan}
+We will compare no recovery, fixed retries, and state-aware recovery. Primary metrics will include
+task completion, duplicate side effects, unsupported claims, tool calls per completed task, and the
+fraction of failures correctly escalated to a human.
+
+% TODO: Results, limitations, and conclusion are intentionally unfinished.
+
+\\bibliographystyle{plain}
+\\bibliography{references}
+\\end{document}
+`;
+
+const climateOutline = `\\documentclass{article}
+\\usepackage{hyperref}
+\\usepackage{cite}
+\\title{Evidence-Aware Climate Risk Modeling: Research Outline}
+\\author{CitePilot Demo}
+\\date{}
+
+\\begin{document}
+\\maketitle
+
+\\section{Motivation}
+Climate risk models combine physical projections, exposure data, and assumptions about adaptation.
+The IPCC describes risk as an interaction among hazards, vulnerability, and exposure
+\\cite{ipcc2023}. Machine learning can connect heterogeneous data, but predictive accuracy alone does
+not make a model useful for policy.
+
+\\section{Research Questions}
+\\begin{enumerate}
+  \\item How should source uncertainty propagate into a local risk estimate?
+  \\item Which explanations remain stable across climate scenarios?
+  \\item Can a citation graph reveal features derived from the same underlying dataset?
+\\end{enumerate}
+
+\\section{Proposed Method}
+The planned system will pair a tabular risk model with an evidence layer recording the source,
+geographic scope, and publication date of each feature. Process-aware machine learning may constrain
+predictions outside the observed range \\cite{reichstein2019deep}. The design follows recommendations
+for using machine learning as one component of climate action \\cite{rolnick2022climate}.
+
+% TODO: Select a region and replace this outline with a concrete data inventory.
+% TODO: Add baselines, validation splits, and an uncertainty calibration plan.
+
+\\section{Planned Paper Structure}
+\\begin{enumerate}
+  \\item Introduction and decision context
+  \\item Data provenance and citation graph
+  \\item Risk model and uncertainty propagation
+  \\item Scenario-based evaluation
+  \\item Limitations and responsible use
+\\end{enumerate}
+
+\\bibliographystyle{plain}
+\\bibliography{references}
+\\end{document}
+`;
+
 const SEEDED_PROJECTS: DemoProject[] = [
-  { id: "demo-graphrag", name: "GraphRAG Survey", description: "Map retrieval-augmented generation across graph and vector methods.", accent: "from-indigo-500 to-violet-500", files: starterFiles("GraphRAG Survey", "This review studies graph-based retrieval."), papers },
-  { id: "demo-agents", name: "Reliable AI Agents", description: "Explore tool use, planning loops, evaluation, and recovery patterns.", accent: "from-cyan-500 to-blue-500", files: starterFiles("Reliable AI Agents", "This review studies evidence-grounded agents."), papers },
-  { id: "demo-climate", name: "Climate Risk Modeling", description: "Preview an interdisciplinary review with connected evidence clusters.", accent: "from-emerald-500 to-teal-500", files: starterFiles("Climate Risk Modeling", "This review studies evidence synthesis for climate risk."), papers },
+  {
+    id: "demo-graphrag",
+    name: "GraphRAG Survey",
+    description: "A developed working draft comparing graph, vector, and hybrid retrieval.",
+    accent: "from-indigo-500 to-violet-500",
+    files: seededFiles(graphragDraft, graphragBibliography),
+    papers: graphragPapers,
+  },
+  {
+    id: "demo-agents",
+    name: "Reliable AI Agents",
+    description: "A half-written paper with a system model, evaluation plan, and open TODOs.",
+    accent: "from-cyan-500 to-blue-500",
+    files: seededFiles(agentsHalfDraft, agentsBibliography),
+    papers: agentPapers,
+  },
+  {
+    id: "demo-climate",
+    name: "Climate Risk Modeling",
+    description: "An early research outline with questions, methods, and a planned paper structure.",
+    accent: "from-emerald-500 to-teal-500",
+    files: seededFiles(climateOutline, climateBibliography),
+    papers: climatePapers,
+  },
 ];
 
 function LimitPill({ icon: Icon, label, remaining, limit }: { icon: typeof Bot; label: string; remaining?: number; limit?: number }) {
@@ -312,7 +556,7 @@ export function DemoPage({ onExit, onSignUp }: { onExit: () => void; onSignUp: (
                 description: "Your one temporary CitePilot project.",
                 accent: "from-fuchsia-500 to-indigo-500",
                 files: starterFiles(clean, "This temporary review explores an emerging research question."),
-                papers,
+                papers: graphragPapers,
               };
               sessionStorage.setItem("citepilot_demo_project_created", "1");
               setCreatedUsed(true);
